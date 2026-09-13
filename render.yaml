@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ems-facturation
+    runtime: docker
+    autoDeploy: false
+    envVars:
+      - key: EMS_ADMIN_USER
+        value: admin
+      - key: EMS_ADMIN_PASSWORD
+        sync: false
+      - key: EMS_SECRET_KEY
+        generateValue: true
+      - key: EMS_HTTPS
+        value: "1"
+      - key: EMS_DATA_DIR
+        value: /data
+    disk:
+      name: ems-data
+      mountPath: /data
+      sizeGB: 1
