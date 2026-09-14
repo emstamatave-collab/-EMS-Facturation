@@ -1,4 +1,5 @@
-import sqlite3, os, re, hmac
+import sqlite3, os, re, hmac, uuid, shutil
+from urllib.parse import quote
 from pathlib import Path
 from datetime import date, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, flash, Response, jsonify, session
@@ -12,6 +13,7 @@ DATA_DIR=Path(os.environ.get('EMS_DATA_DIR', str(BASE/'data')))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB=DATA_DIR/'ems.db'
 LOGO=BASE/'logo_ems.png'
+UPLOADS=DATA_DIR/'uploads'; UPLOADS.mkdir(parents=True, exist_ok=True)
 app=Flask(__name__)
 app.secret_key=os.environ.get('EMS_SECRET_KEY','change-this-secret-before-production')
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('EMS_HTTPS','0')=='1')
@@ -33,7 +35,26 @@ def init_db():
     CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,number TEXT NOT NULL,doc_date TEXT,due_date TEXT,client_id INTEGER,reference TEXT,po_number TEXT,payment_terms TEXT,delivery TEXT,status TEXT DEFAULT 'Brouillon',notes TEXT DEFAULT '',created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(client_id) REFERENCES clients(id));
     CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER,description TEXT,qty REAL DEFAULT 1,unit_price REAL DEFAULT 0,FOREIGN KEY(doc_id) REFERENCES docs(id));
     CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER,payment_date TEXT,amount REAL DEFAULT 0,method TEXT,note TEXT,FOREIGN KEY(doc_id) REFERENCES docs(id));
-    '''); c.commit(); c.close()
+    CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,reference TEXT UNIQUE,name TEXT NOT NULL,description TEXT,price REAL DEFAULT 0,stock REAL DEFAULT 0,min_stock REAL DEFAULT 0,photo TEXT,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER,move_date TEXT,qty REAL,move_type TEXT,note TEXT,FOREIGN KEY(product_id) REFERENCES products(id));
+    CREATE TABLE IF NOT EXISTS signatures(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER UNIQUE,signer_name TEXT,signature_data TEXT,signed_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(doc_id) REFERENCES docs(id));
+    CREATE TABLE IF NOT EXISTS client_scans(id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER,image_path TEXT,extracted_text TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(client_id) REFERENCES clients(id));
+    ''');
+    cols={r['name'] for r in c.execute('pragma table_info(docs)').fetchall()}
+    for name,typ in [('source_doc_id','INTEGER'),('doc_subtype',"TEXT DEFAULT 'Standard'"),('deposit_percent','REAL DEFAULT 0')]:
+        if name not in cols: c.execute(f'alter table docs add column {name} {typ}')
+    c.commit(); c.close()
+
+# Initialise automatiquement la base, y compris avec Gunicorn/Render.
+init_db()
+
+def automatic_backup():
+    if not DB.exists(): return
+    bdir=DATA_DIR/'backups'; bdir.mkdir(parents=True,exist_ok=True)
+    target=bdir/f"ems_{date.today().isoformat()}.db"
+    if not target.exists(): shutil.copy2(DB,target)
+
+automatic_backup()
 
 def money(v): return f"{float(v or 0):,.0f}".replace(',', ' ')
 
@@ -91,12 +112,12 @@ STYLE='''
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 input,select,textarea{width:100%;padding:10px;border:1px solid #cfd4dc;border-radius:8px;background:white}textarea{min-height:70px}label{font-size:13px;font-weight:650;display:block;margin-bottom:5px}
 button{padding:10px 14px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer;font-weight:700}.danger{background:var(--red)}.success{background:var(--green)}
-table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{font-size:12px;color:#555;text-transform:uppercase}.right{text-align:right}.muted{color:var(--muted)}.total{font-size:22px;font-weight:800}.kpi{font-size:28px;font-weight:800}.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eee;font-size:12px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.flash{background:#fff6d8;border:1px solid #f5d98c;padding:10px;border-radius:8px;margin:12px 0}.search{max-width:320px}.small{font-size:12px}.nowrap{white-space:nowrap}
+table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{font-size:12px;color:#555;text-transform:uppercase}.right{text-align:right}.muted{color:var(--muted)}.total{font-size:22px;font-weight:800}.kpi{font-size:28px;font-weight:800}.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eee;font-size:12px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.flash{background:#fff6d8;border:1px solid #f5d98c;padding:10px;border-radius:8px;margin:12px 0}.search{max-width:320px}.small{font-size:12px}.nowrap{white-space:nowrap}.low{color:#b91c1c;font-weight:800}.ok{color:#166534;font-weight:800}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions form{margin:0}.btn{display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:700}.btn.alt{background:#fff;color:#111;border:1px solid var(--line)}.btn.green{background:#166534}.sigcanvas{border:1px solid #bbb;border-radius:8px;width:100%;max-width:520px;height:180px;touch-action:none;background:#fff}
 @media(max-width:760px){.grid,.grid3,.grid4{grid-template-columns:1fr}.top{position:static}.tablewrap{overflow-x:auto}.wrap{margin-top:12px}.nav a{flex:1;text-align:center}.card{padding:14px}}
 '''
 TPL='''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EMS Facturation</title><meta name="theme-color" content="#111111"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="EMS"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><link rel="icon" href="/icon-192.png"><style>'''+STYLE+'''</style></head><body>
 <div class="top">{% if logo %}<img src="{{url_for('logo')}}">{% endif %}<div><div class="brand">EMS — Devis & Facturation</div><div class="sub">Gestion commerciale • Ariary (MGA)</div></div></div>
-<div class="wrap"><div class="nav"><a href="{{url_for('home')}}">Tableau de bord</a><a href="{{url_for('clients')}}">Clients</a><a href="{{url_for('documents')}}">Devis / Factures</a><a href="{{url_for('new_document')}}">+ Nouveau</a><a href="{{url_for('backup_db')}}">Sauvegarde</a><a href="{{url_for('logout')}}">Déconnexion</a></div>
+<div class="wrap"><div class="nav"><a href="{{url_for('home')}}">Tableau de bord</a><a href="{{url_for('clients')}}">Clients</a><a href="{{url_for('documents')}}">Devis / Factures</a><a href="{{url_for('products')}}">Catalogue / Stock</a><a href="{{url_for('global_search')}}">Recherche</a><a href="{{url_for('reminders')}}">Relances</a><a href="{{url_for('new_document')}}">+ Nouveau</a><a href="{{url_for('backup_db')}}">Sauvegarde</a><a href="{{url_for('logout')}}">Déconnexion</a></div>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</div><script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/service-worker.js').catch(()=>{});}</script></body></html>'''
 
 def page(body): return render_template_string(TPL,body=body,logo=LOGO.exists())
@@ -173,7 +194,7 @@ self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWi
     return Response(js, mimetype='application/javascript', headers={'Cache-Control':'no-cache'})
 
 @app.route('/health')
-def health(): return {'ok': True, 'app':'EMS Facturation V3'}
+def health(): return {'ok': True, 'app':'EMS Facturation V5 Complete'}
 
 @app.route('/')
 def home():
@@ -188,7 +209,7 @@ def clients():
     if request.method=='POST':
         con.execute('insert into clients(name,address,nif,stat,email,phone) values(?,?,?,?,?,?)',(request.form['name'],request.form.get('address'),request.form.get('nif'),request.form.get('stat'),request.form.get('email'),request.form.get('phone'))); con.commit(); con.close(); flash('Client ajouté.'); return redirect(url_for('clients'))
     q=request.args.get('q','').strip(); rows=con.execute('select * from clients where name like ? or nif like ? order by name',(f'%{q}%',f'%{q}%')).fetchall() if q else con.execute('select * from clients order by name').fetchall(); con.close()
-    trs=''.join(f"<tr><td><a href='/client/{r['id']}/edit'>{r['name']}</a></td><td>{r['nif'] or ''}</td><td>{r['stat'] or ''}</td><td>{r['phone'] or ''}</td><td>{r['email'] or ''}</td></tr>" for r in rows)
+    trs=''.join(f"<tr><td><a href='/client/{r['id']}'>{r['name']}</a></td><td>{r['nif'] or ''}</td><td>{r['stat'] or ''}</td><td>{r['phone'] or ''}</td><td>{r['email'] or ''}</td></tr>" for r in rows)
     return page(f'''<div class="card"><h2>Nouveau client</h2><form method="post"><div class="grid3"><div><label>Nom / société</label><input name="name" required></div><div><label>Téléphone</label><input name="phone"></div><div><label>Email</label><input name="email"></div><div><label>NIF</label><input name="nif"></div><div><label>STAT</label><input name="stat"></div><div><label>Adresse</label><textarea name="address"></textarea></div></div><p><button>Ajouter le client</button></p></form></div><div class="card"><div class="row"><h2 style="flex:1">Clients</h2><form><input class="search" name="q" value="{q}" placeholder="Rechercher nom ou NIF"></form></div><div class="tablewrap"><table><tr><th>Nom</th><th>NIF</th><th>STAT</th><th>Téléphone</th><th>Email</th></tr>{trs}</table></div></div>''')
 
 @app.route('/client/<int:cid>/edit',methods=['GET','POST'])
@@ -230,9 +251,9 @@ def document(doc_id):
     total=total_for(con,doc_id); paid=paid_for(con,doc_id); con.close(); balance=max(0,total-paid)
     trs=''.join(f"<tr><td>{l['description']}</td><td>{l['qty']:g}</td><td class='right'>{money(l['unit_price'])}</td><td class='right'>{money(l['qty']*l['unit_price'])}</td></tr>" for l in lines)
     ptrs=''.join(f"<tr><td>{p['payment_date'] or ''}</td><td>{p['method'] or ''}</td><td>{p['note'] or ''}</td><td class='right'>{money(p['amount'])} Ar</td></tr>" for p in pays) or '<tr><td colspan="4" class="muted">Aucun règlement enregistré.</td></tr>'
-    conv=f"<form method='post' action='/document/{doc_id}/convert'><button>Transformer en facture</button></form>" if d['kind']=='Devis' else ''
+    conv=(f"<form method='post' action='/document/{doc_id}/convert'><button>Transformer en facture</button></form><form method='post' action='/document/{doc_id}/deposit'><input name='percent' type='number' value='30' min='1' max='100' style='width:80px'><button>Créer acompte %</button></form><a class='btn green' href='/document/{doc_id}/signature'>Signer</a>" if d['kind']=='Devis' else '')
     payform=f'''<div class="card"><h3>Enregistrer un règlement</h3><form method="post" action="/document/{doc_id}/payment"><div class="grid3"><div><label>Date</label><input type="date" name="payment_date" value="{date.today().isoformat()}"></div><div><label>Montant (Ar)</label><input type="number" name="amount" value="{int(balance)}" min="0"></div><div><label>Mode</label><select name="method"><option>Virement</option><option>Espèces</option><option>Chèque</option><option>Mobile Money</option><option>Autre</option></select></div></div><p><label>Note</label><input name="note"></p><button class="success">Ajouter le règlement</button></form></div>''' if d['kind']=='Facture' else ''
-    return page(f'''<div class="card"><div class="row"><div style="flex:1"><h2>{d['kind']} {d['number']}</h2><div class="muted">{d['client'] or 'Sans client'} • {d['doc_date'] or ''}</div></div><a class="btn2" href="/document/{doc_id}/edit">Modifier</a><a class="btn2" href="/document/{doc_id}/pdf">Télécharger PDF</a>{conv}</div><hr><div class="grid3"><div><div class="muted">Total</div><div class="total">{money(total)} Ar</div></div><div><div class="muted">Encaissé</div><div class="total">{money(paid)} Ar</div></div><div><div class="muted">Solde</div><div class="total">{money(balance)} Ar</div></div></div><p><b>Statut :</b> <span class="badge">{d['status']}</span> &nbsp; <b>Référence :</b> {d['reference'] or ''}</p><h3>Client</h3><div>{d['client'] or ''}<br>{(d['address'] or '').replace(chr(10),'<br>')}<br>NIF : {d['nif'] or ''}<br>STAT : {d['stat'] or ''}</div><h3>Détail</h3><div class="tablewrap"><table><tr><th>Désignation</th><th>Qté</th><th class="right">P.U.</th><th class="right">Total</th></tr>{trs}<tr><td colspan="3" class="right"><b>TOTAL</b></td><td class="right total">{money(total)} Ar</td></tr></table></div><p><b>Arrêté à la somme de :</b> {number_words(total)}.</p><p><b>Règlement :</b> {d['payment_terms'] or ''}<br><b>Bon de commande :</b> {d['po_number'] or ''}<br><b>Livraison :</b> {d['delivery'] or ''}</p></div>{payform}<div class="card"><h3>Règlements</h3><div class="tablewrap"><table><tr><th>Date</th><th>Mode</th><th>Note</th><th class="right">Montant</th></tr>{ptrs}</table></div></div>''')
+    return page(f'''<div class="card"><div class="row"><div style="flex:1"><h2>{d['kind']} {d['number']}</h2><div class="muted">{d['client'] or 'Sans client'} • {d['doc_date'] or ''}</div></div><a class="btn2" href="/document/{doc_id}/edit">Modifier</a><a class="btn2" href="/document/{doc_id}/pdf">Télécharger PDF</a><a class="btn2" href="/document/{doc_id}/share">Partager</a>{conv}</div><hr><div class="grid3"><div><div class="muted">Total</div><div class="total">{money(total)} Ar</div></div><div><div class="muted">Encaissé</div><div class="total">{money(paid)} Ar</div></div><div><div class="muted">Solde</div><div class="total">{money(balance)} Ar</div></div></div><p><b>Statut :</b> <span class="badge">{d['status']}</span> &nbsp; <b>Référence :</b> {d['reference'] or ''}</p><form method='post' action='/document/{doc_id}/status' class='row'><label style='margin:0'>Changer le statut</label><select name='status' style='width:auto'><option>{d['status']}</option><option>Brouillon</option><option>Envoyé</option><option>Accepté</option><option>Commandé</option><option>Livré</option><option>Facturé</option><option>Partiellement payé</option><option>Payé</option></select><button>Mettre à jour</button></form><h3>Client</h3><div>{d['client'] or ''}<br>{(d['address'] or '').replace(chr(10),'<br>')}<br>NIF : {d['nif'] or ''}<br>STAT : {d['stat'] or ''}</div><h3>Détail</h3><div class="tablewrap"><table><tr><th>Désignation</th><th>Qté</th><th class="right">P.U.</th><th class="right">Total</th></tr>{trs}<tr><td colspan="3" class="right"><b>TOTAL</b></td><td class="right total">{money(total)} Ar</td></tr></table></div><p><b>Arrêté à la somme de :</b> {number_words(total)}.</p><p><b>Règlement :</b> {d['payment_terms'] or ''}<br><b>Bon de commande :</b> {d['po_number'] or ''}<br><b>Livraison :</b> {d['delivery'] or ''}</p></div>{payform}<div class="card"><h3>Règlements</h3><div class="tablewrap"><table><tr><th>Date</th><th>Mode</th><th>Note</th><th class="right">Montant</th></tr>{ptrs}</table></div></div>''')
 
 @app.route('/document/<int:doc_id>/edit',methods=['GET','POST'])
 def edit_document(doc_id):
@@ -243,19 +264,112 @@ def edit_document(doc_id):
         for de,q,p in zip(request.form.getlist('description'),request.form.getlist('qty'),request.form.getlist('unit_price')):
             if de.strip(): con.execute('insert into lines(doc_id,description,qty,unit_price) values(?,?,?,?)',(doc_id,de,float(q or 0),float(p or 0)))
         con.commit(); con.close(); flash('Document mis à jour.'); return redirect(url_for('document',doc_id=doc_id))
-    con.close(); opts=''.join(f"<option value='{c['id']}' {'selected' if c['id']==d['client_id'] else ''}>{c['name']}</option>" for c in cls); statuses=['Brouillon','Envoyé','Accepté','Refusé','Facturé','Partiellement payé','Payé','Annulé']; sopts=''.join(f"<option {'selected' if s==d['status'] else ''}>{s}</option>" for s in statuses)
+    con.close(); opts=''.join(f"<option value='{c['id']}' {'selected' if c['id']==d['client_id'] else ''}>{c['name']}</option>" for c in cls); statuses=['Brouillon','Envoyé','Accepté','Commandé','Livré','Facturé','Partiellement payé','Payé','Refusé','Annulé']; sopts=''.join(f"<option {'selected' if s==d['status'] else ''}>{s}</option>" for s in statuses)
     all_lines=list(lines)+[{'description':'','qty':1,'unit_price':0} for _ in range(max(3,8-len(lines)))]; rows=''.join(f"<tr><td><input name='description' value=\"{str(l['description'] or '').replace(chr(34),'&quot;')}\"></td><td><input name='qty' type='number' step='0.01' value='{l['qty']}'></td><td><input name='unit_price' type='number' step='1' value='{l['unit_price']}'></td></tr>" for l in all_lines)
     return page(f'''<div class="card"><h2>Modifier {d['kind']} {d['number']}</h2><form method="post"><div class="grid3"><div><label>Type</label><select name="kind"><option {'selected' if d['kind']=='Devis' else ''}>Devis</option><option {'selected' if d['kind']=='Facture' else ''}>Facture</option></select></div><div><label>Numéro</label><input name="number" value="{d['number']}"></div><div><label>Statut</label><select name="status">{sopts}</select></div><div><label>Client</label><select name="client_id"><option value="">--</option>{opts}</select></div><div><label>Date</label><input type="date" name="doc_date" value="{d['doc_date'] or ''}"></div><div><label>Échéance</label><input type="date" name="due_date" value="{d['due_date'] or ''}"></div><div><label>Bon de commande</label><input name="po_number" value="{d['po_number'] or ''}"></div></div><p><label>Référence</label><input name="reference" value="{d['reference'] or ''}"></p><div class="grid"><div><label>Modalité de règlement</label><input name="payment_terms" value="{d['payment_terms'] or ''}"></div><div><label>Livraison / travaux</label><input name="delivery" value="{d['delivery'] or ''}"></div></div><p><label>Notes</label><textarea name="notes">{d['notes'] or ''}</textarea></p><div class="tablewrap"><table><tr><th>Désignation</th><th>Qté</th><th>P.U. Ar</th></tr>{rows}</table></div><p><button>Enregistrer</button></p></form></div>''')
 
 @app.post('/document/<int:doc_id>/convert')
 def convert(doc_id):
     con=db(); d=con.execute('select * from docs where id=?',(doc_id,)).fetchone()
-    if d and d['kind']=='Devis': con.execute('update docs set kind=?,number=?,status=? where id=?',('Facture',next_number('Facture'),'Facturé',doc_id)); con.commit(); flash('Devis transformé en facture.')
-    con.close(); return redirect(url_for('document',doc_id=doc_id))
+    if not d or d['kind']!='Devis': con.close(); return redirect(url_for('document',doc_id=doc_id))
+    cur=con.execute('insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,source_doc_id,doc_subtype,deposit_percent) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('Facture',next_number('Facture'),date.today().isoformat(),(date.today()+timedelta(days=30)).isoformat(),d['client_id'],d['reference'],d['po_number'],d['payment_terms'],d['delivery'],'Facturé',d['notes'],doc_id,'Finale',0))
+    nid=cur.lastrowid
+    con.execute('insert into lines(doc_id,description,qty,unit_price) select ?,description,qty,unit_price from lines where doc_id=?',(nid,doc_id))
+    deposits=con.execute("""select coalesce(sum(l.qty*l.unit_price),0) t from docs a join lines l on l.doc_id=a.id where a.source_doc_id=? and a.kind='Facture' and a.doc_subtype='Acompte' and a.status not in ('Annulé')""",(doc_id,)).fetchone()['t']
+    if deposits>0: con.execute('insert into lines(doc_id,description,qty,unit_price) values(?,?,?,?)',(nid,'Déduction des acomptes déjà facturés',1,-deposits))
+    con.execute("update docs set status='Facturé' where id=?",(doc_id,)); con.commit(); con.close(); flash('Facture finale créée, acomptes déduits.'); return redirect(url_for('document',doc_id=nid))
+
+@app.post('/document/<int:doc_id>/deposit')
+def create_deposit(doc_id):
+    pct=max(1,min(100,float(request.form.get('percent') or 30))); con=db(); d=con.execute('select * from docs where id=?',(doc_id,)).fetchone()
+    if not d: con.close(); return redirect(url_for('documents'))
+    total=total_for(con,doc_id); amount=round(total*pct/100)
+    cur=con.execute('insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,source_doc_id,doc_subtype,deposit_percent) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('Facture',next_number('Facture'),date.today().isoformat(),(date.today()+timedelta(days=7)).isoformat(),d['client_id'],f'Acompte {pct:g}% - {d["reference"] or d["number"]}',d['po_number'],d['payment_terms'],d['delivery'],'Facturé',d['notes'],doc_id,'Acompte',pct))
+    nid=cur.lastrowid; con.execute('insert into lines(doc_id,description,qty,unit_price) values(?,?,?,?)',(nid,f'Acompte {pct:g}% sur {d["number"]}',1,amount)); con.commit(); con.close(); flash('Facture d’acompte créée.'); return redirect(url_for('document',doc_id=nid))
 
 @app.post('/document/<int:doc_id>/payment')
 def add_payment(doc_id):
     amount=float(request.form.get('amount') or 0); con=db(); con.execute('insert into payments(doc_id,payment_date,amount,method,note) values(?,?,?,?,?)',(doc_id,request.form.get('payment_date'),amount,request.form.get('method'),request.form.get('note'))); total=total_for(con,doc_id); paid=paid_for(con,doc_id); status='Payé' if paid>=total and total>0 else 'Partiellement payé'; con.execute('update docs set status=? where id=?',(status,doc_id)); con.commit(); con.close(); flash('Règlement enregistré.'); return redirect(url_for('document',doc_id=doc_id))
+
+
+@app.route('/client/<int:cid>')
+def client_history(cid):
+    con=db(); c=con.execute('select * from clients where id=?',(cid,)).fetchone(); docs=con.execute('select d.*,coalesce(sum(l.qty*l.unit_price),0) total from docs d left join lines l on l.doc_id=d.id where d.client_id=? group by d.id order by d.id desc',(cid,)).fetchall(); con.close()
+    if not c:return 'Client introuvable',404
+    trs=''.join(f"<tr><td>{d['doc_date'] or ''}</td><td>{d['kind']}</td><td><a href='/document/{d['id']}'>{d['number']}</a></td><td>{d['reference'] or ''}</td><td>{d['status']}</td><td class='right'>{money(d['total'])} Ar</td></tr>" for d in docs) or '<tr><td colspan="6">Aucun document.</td></tr>'
+    return page(f'''<div class="card"><div class="row"><div style="flex:1"><h2>{c['name']}</h2><div>{c['phone'] or ''} • {c['email'] or ''}</div><div class="muted">NIF {c['nif'] or ''} — STAT {c['stat'] or ''}</div></div><a class="btn alt" href="/client/{cid}/edit">Modifier</a><a class="btn" href="/new?client_id={cid}">Nouveau document</a></div></div><div class="card"><h2>Historique complet</h2><div class="tablewrap"><table><tr><th>Date</th><th>Type</th><th>N°</th><th>Objet</th><th>Statut</th><th>Total</th></tr>{trs}</table></div></div><div class="card"><h3>Photo / scan client</h3><form method="post" enctype="multipart/form-data" action="/client/{cid}/scan"><input type="file" name="scan" accept="image/*" capture="environment" required><p><button>Importer et analyser</button></p></form></div>''')
+
+@app.post('/client/<int:cid>/scan')
+def client_scan(cid):
+    f=request.files.get('scan')
+    if not f: flash('Aucune photo reçue.'); return redirect(url_for('client_history',cid=cid))
+    ext=(Path(f.filename).suffix or '.jpg').lower(); name=f'client_{cid}_{uuid.uuid4().hex[:10]}{ext}'; path=UPLOADS/name; f.save(path); text=''
+    try:
+        import pytesseract
+        from PIL import Image
+        text=pytesseract.image_to_string(Image.open(path),lang='fra')
+    except Exception: text='OCR non disponible sur ce serveur.'
+    con=db(); con.execute('insert into client_scans(client_id,image_path,extracted_text) values(?,?,?)',(cid,name,text));
+    if text and not text.startswith('OCR non'):
+        email=re.search(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}',text); phone=re.search(r'(?:\+?261|0)[\d\s.-]{7,}',text); nif=re.search(r'(?i)NIF\s*[:\-]?\s*([0-9 ]{6,})',text); stat=re.search(r'(?i)STAT\s*[:\-]?\s*([0-9 ]{6,})',text)
+        cur=con.execute('select * from clients where id=?',(cid,)).fetchone(); con.execute('update clients set email=?,phone=?,nif=?,stat=? where id=?',(cur['email'] or (email.group(0) if email else ''),cur['phone'] or (phone.group(0).strip() if phone else ''),cur['nif'] or (nif.group(1).strip() if nif else ''),cur['stat'] or (stat.group(1).strip() if stat else ''),cid))
+    con.commit(); con.close(); flash('Scan client enregistré.'); return redirect(url_for('client_history',cid=cid))
+
+@app.route('/products',methods=['GET','POST'])
+def products():
+    con=db()
+    if request.method=='POST':
+        photo=request.files.get('photo'); pname=''
+        if photo and photo.filename: pname=f'prod_{uuid.uuid4().hex[:10]}{Path(photo.filename).suffix.lower()}'; photo.save(UPLOADS/pname)
+        try: con.execute('insert into products(reference,name,description,price,stock,min_stock,photo) values(?,?,?,?,?,?,?)',(request.form.get('reference'),request.form['name'],request.form.get('description'),float(request.form.get('price') or 0),float(request.form.get('stock') or 0),float(request.form.get('min_stock') or 0),pname)); con.commit(); flash('Article ajouté au catalogue.')
+        except sqlite3.IntegrityError: flash('Cette référence existe déjà.')
+        con.close(); return redirect(url_for('products'))
+    q=request.args.get('q',''); rows=con.execute('select * from products where active=1 and (reference like ? or name like ? or description like ?) order by name',(f'%{q}%',f'%{q}%',f'%{q}%')).fetchall(); con.close()
+    trs=''.join(f"<tr><td>{r['reference'] or ''}</td><td><b>{r['name']}</b><br><span class='small muted'>{r['description'] or ''}</span></td><td class='right'>{money(r['price'])} Ar</td><td class='right'>{r['stock']:g}</td><td>{r['min_stock']:g}</td><td><a href='/product/{r['id']}'>Gérer</a></td></tr>" for r in rows)
+    return page(f'''<div class="card"><h2>Catalogue pièces / matériels</h2><form method="post" enctype="multipart/form-data"><div class="grid3"><div><label>Référence</label><input name="reference"></div><div><label>Nom</label><input name="name" required></div><div><label>Prix de vente Ar</label><input type="number" name="price"></div><div><label>Stock initial</label><input type="number" step="0.01" name="stock" value="0"></div><div><label>Seuil d’alerte</label><input type="number" step="0.01" name="min_stock" value="0"></div><div><label>Photo</label><input type="file" name="photo" accept="image/*"></div></div><p><label>Description</label><textarea name="description"></textarea></p><button>Ajouter l’article</button></form></div><div class="card"><div class="row"><h2 style="flex:1">Stock</h2><form><input name="q" value="{q}" placeholder="Référence, nom..."></form></div><div class="tablewrap"><table><tr><th>Réf.</th><th>Article</th><th>Prix</th><th>Stock</th><th>Alerte</th><th></th></tr>{trs}</table></div></div>''')
+
+@app.route('/product/<int:pid>',methods=['GET','POST'])
+def product(pid):
+    con=db(); p=con.execute('select * from products where id=?',(pid,)).fetchone()
+    if not p: con.close(); return 'Article introuvable',404
+    if request.method=='POST':
+        qty=float(request.form.get('qty') or 0); typ=request.form.get('move_type','Entrée'); delta=abs(qty) if typ=='Entrée' else -abs(qty); con.execute('update products set stock=stock+? where id=?',(delta,pid)); con.execute('insert into stock_moves(product_id,move_date,qty,move_type,note) values(?,?,?,?,?)',(pid,date.today().isoformat(),abs(qty),typ,request.form.get('note'))); con.commit(); con.close(); flash('Stock mis à jour.'); return redirect(url_for('product',pid=pid))
+    moves=con.execute('select * from stock_moves where product_id=? order by id desc limit 30',(pid,)).fetchall(); con.close(); trs=''.join(f"<tr><td>{m['move_date']}</td><td>{m['move_type']}</td><td>{m['qty']:g}</td><td>{m['note'] or ''}</td></tr>" for m in moves)
+    return page(f'''<div class="card"><h2>{p['reference'] or ''} — {p['name']}</h2><div class="total">Stock : {p['stock']:g}</div><div>{p['description'] or ''}</div><div>Prix : {money(p['price'])} Ar • Seuil : {p['min_stock']:g}</div></div><div class="card"><h3>Mouvement de stock</h3><form method="post"><div class="grid3"><div><label>Type</label><select name="move_type"><option>Entrée</option><option>Sortie</option></select></div><div><label>Quantité</label><input type="number" step="0.01" name="qty" required></div><div><label>Note</label><input name="note"></div></div><p><button>Enregistrer</button></p></form></div><div class="card"><h3>Historique stock</h3><table><tr><th>Date</th><th>Type</th><th>Qté</th><th>Note</th></tr>{trs}</table></div>''')
+
+@app.route('/search')
+def global_search():
+    q=request.args.get('q','').strip(); body='<div class="card"><h2>Recherche globale</h2><form><input name="q" value="'+q+'" placeholder="Client, téléphone, référence, devis, facture..."><p><button>Rechercher</button></p></form></div>'
+    if q:
+        con=db(); cs=con.execute('select * from clients where name like ? or phone like ? or email like ? or nif like ?',(f'%{q}%',)*4).fetchall(); ds=con.execute('select d.*,c.name client from docs d left join clients c on c.id=d.client_id where d.number like ? or d.reference like ? or d.po_number like ?',(f'%{q}%',)*3).fetchall(); ps=con.execute('select * from products where reference like ? or name like ? or description like ?',(f'%{q}%',)*3).fetchall(); con.close()
+        body+='<div class="card"><h3>Résultats</h3>'+''.join(f"<p>👤 <a href='/client/{x['id']}'>{x['name']}</a> — {x['phone'] or ''}</p>" for x in cs)+''.join(f"<p>📄 <a href='/document/{x['id']}'>{x['kind']} {x['number']}</a> — {x['client'] or ''}</p>" for x in ds)+''.join(f"<p>📦 <a href='/product/{x['id']}'>{x['reference'] or ''} {x['name']}</a></p>" for x in ps)+'</div>'
+    return page(body)
+
+@app.route('/reminders')
+def reminders():
+    con=db(); due=con.execute("""select d.*,c.name client,coalesce(sum(l.qty*l.unit_price),0) total,(select coalesce(sum(amount),0) from payments p where p.doc_id=d.id) paid from docs d left join clients c on c.id=d.client_id left join lines l on l.doc_id=d.id where (d.kind='Devis' and d.status in ('Brouillon','Envoyé','Accepté')) or (d.kind='Facture' and d.status not in ('Payé','Annulé')) group by d.id order by d.due_date""").fetchall(); con.close()
+    trs=''.join(f"<tr><td>{d['kind']}</td><td><a href='/document/{d['id']}'>{d['number']}</a></td><td>{d['client'] or ''}</td><td>{d['due_date'] or ''}</td><td>{d['status']}</td><td class='right'>{money(max(0,d['total']-d['paid']))} Ar</td></tr>" for d in due)
+    return page(f'''<div class="card"><h2>Relances devis & factures</h2><p class="muted">Devis ouverts et factures non soldées.</p><div class="tablewrap"><table><tr><th>Type</th><th>N°</th><th>Client</th><th>Échéance</th><th>Statut</th><th>À suivre</th></tr>{trs}</table></div></div>''')
+
+@app.route('/document/<int:doc_id>/share')
+def share_document(doc_id):
+    con=db(); d=con.execute('select d.*,c.name client,c.email,c.phone from docs d left join clients c on c.id=d.client_id where d.id=?',(doc_id,)).fetchone(); con.close()
+    if not d:return 'Introuvable',404
+    subject=f"{d['kind']} {d['number']} - EMS"; text=f"Bonjour {d['client'] or ''}, veuillez trouver votre {d['kind'].lower()} {d['number']} EMS."; mail=f"mailto:{d['email'] or ''}?subject={quote(subject)}&body={quote(text)}"; phone=re.sub(r'\D','',d['phone'] or ''); wa=f"https://wa.me/{phone}?text={quote(text)}" if phone else '#'
+    return page(f'''<div class="card"><h2>Partager {d['kind']} {d['number']}</h2><div class="actions"><a class="btn" href="{mail}">📧 E-mail</a><a class="btn green" href="{wa}">💬 WhatsApp</a><a class="btn alt" href="/document/{doc_id}/pdf">📄 Télécharger le PDF</a></div></div>''')
+
+@app.route('/document/<int:doc_id>/signature',methods=['GET','POST'])
+def signature(doc_id):
+    if request.method=='POST':
+        data=request.form.get('signature_data',''); name=request.form.get('signer_name',''); con=db(); con.execute('insert into signatures(doc_id,signer_name,signature_data) values(?,?,?) on conflict(doc_id) do update set signer_name=excluded.signer_name,signature_data=excluded.signature_data,signed_at=CURRENT_TIMESTAMP',(doc_id,name,data)); con.execute("update docs set status='Accepté' where id=? and kind='Devis'",(doc_id,)); con.commit(); con.close(); flash('Signature enregistrée.'); return redirect(url_for('document',doc_id=doc_id))
+    return page(f'''<div class="card"><h2>Signature du devis</h2><form method="post" onsubmit="document.getElementById('sigdata').value=document.getElementById('sig').toDataURL()"><p><label>Nom du signataire</label><input name="signer_name" required></p><canvas id="sig" class="sigcanvas" width="520" height="180"></canvas><input type="hidden" id="sigdata" name="signature_data"><p><button>Signer et accepter</button></p></form></div><script>const c=document.getElementById('sig'),ctx=c.getContext('2d');let on=false;function p(e){{const r=c.getBoundingClientRect(),t=e.touches?e.touches[0]:e;return [(t.clientX-r.left)*c.width/r.width,(t.clientY-r.top)*c.height/r.height]}}c.onmousedown=c.ontouchstart=e=>{{on=true;let a=p(e);ctx.beginPath();ctx.moveTo(...a);e.preventDefault()}};c.onmousemove=c.ontouchmove=e=>{{if(!on)return;ctx.lineTo(...p(e));ctx.stroke();e.preventDefault()}};c.onmouseup=c.onmouseleave=c.ontouchend=()=>on=false;</script>''')
+
+@app.post('/document/<int:doc_id>/status')
+def set_status(doc_id):
+    status=request.form.get('status'); allowed=['Brouillon','Envoyé','Accepté','Commandé','Livré','Facturé','Partiellement payé','Payé','Refusé','Annulé']
+    if status in allowed:
+        con=db(); con.execute('update docs set status=? where id=?',(status,doc_id)); con.commit(); con.close(); flash('Statut mis à jour.')
+    return redirect(url_for('document',doc_id=doc_id))
 
 def draw_wrapped(c,text,x,y,maxw,font='Helvetica',size=9,leading=4.3*mm,max_lines=3):
     c.setFont(font,size); words=(text or '').split(); line=''; lines=[]
