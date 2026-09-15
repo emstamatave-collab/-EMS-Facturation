@@ -695,3 +695,51 @@ def pdf(doc_id):
 
 if __name__=='__main__':
     init_db(); app.run(host='0.0.0.0',port=5000,debug=False)
+
+
+# ===== SAUVEGARDE COMPLETE EMS =====
+@app.route('/backup-complet')
+def backup_complet():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    backup_dir = DATA_DIR / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    backup_name = f"EMS_sauvegarde_{date.today().isoformat()}.zip"
+    backup_path = backup_dir / backup_name
+
+    # Copie SQLite cohérente même si EMS est utilisé
+    db_copy = backup_dir / 'ems.db'
+    source = sqlite3.connect(str(DB))
+    destination = sqlite3.connect(str(db_copy))
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+
+    try:
+        with zipfile.ZipFile(
+            backup_path, 'w', zipfile.ZIP_DEFLATED
+        ) as archive:
+            archive.write(db_copy, 'ems.db')
+
+            if UPLOAD_DIR.exists():
+                for fichier in UPLOAD_DIR.rglob('*'):
+                    if fichier.is_file():
+                        archive.write(
+                            fichier,
+                            str(Path('uploads') / fichier.relative_to(UPLOAD_DIR))
+                        )
+    finally:
+        if db_copy.exists():
+            db_copy.unlink()
+
+    return send_file(
+        backup_path,
+        as_attachment=True,
+        download_name=backup_name,
+        mimetype='application/zip'
+    )
+# ===== FIN SAUVEGARDE COMPLETE EMS =====
