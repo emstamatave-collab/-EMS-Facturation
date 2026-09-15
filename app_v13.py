@@ -742,4 +742,100 @@ def backup_complet():
         download_name=backup_name,
         mimetype='application/zip'
     )
-# ===== FIN SAUVEGARDE COMPLETE EMS =====
+# ===== FIN SAUVEGARDECOMPLETE EMS =====
+# ===== RESTAURATION COMPLETE EMS =====
+@app.route('/restauration', methods=['GET', 'POST'])
+def restauration():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    if request.method == 'GET':
+        return '''
+        <!doctype html>
+        <html lang="fr">
+        <head>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>Restauration EMS</title>
+        </head>
+        <body style="font-family:Arial;padding:25px;max-width:600px;margin:auto">
+            <h2>Restauration EMS</h2>
+            <p><b>Attention :</b> cette opération remplace les données actuelles.</p>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="backup" accept=".zip" required>
+                <br><br>
+                <button type="submit"
+                    style="padding:14px 20px;font-size:16px">
+                    Restaurer la sauvegarde
+                </button>
+            </form>
+        </body>
+        </html>
+        '''
+
+    fichier = request.files.get('backup')
+    if not fichier or not fichier.filename.lower().endswith('.zip'):
+        return 'Fichier ZIP invalide', 400
+
+    temp_dir = Path(tempfile.mkdtemp(prefix='ems_restore_'))
+
+    try:
+        zip_path = temp_dir / 'backup.zip'
+        fichier.save(zip_path)
+
+        with zipfile.ZipFile(zip_path, 'r') as archive:
+            noms = archive.namelist()
+
+            if 'ems.db' not in noms:
+                return 'Sauvegarde invalide : ems.db absent', 400
+
+            # Protection contre les chemins dangereux dans le ZIP
+            for nom in noms:
+                p = Path(nom)
+                if p.is_absolute() or '..' in p.parts:
+                    return 'Sauvegarde ZIP non autorisée', 400
+
+            archive.extractall(temp_dir / 'contenu')
+
+        contenu = temp_dir / 'contenu'
+        nouvelle_db = contenu / 'ems.db'
+
+        # Vérification de la base avant remplacement
+        test_db = sqlite3.connect(str(nouvelle_db))
+        try:
+            resultat = test_db.execute('PRAGMA integrity_check').fetchone()
+            if not resultat or resultat[0] != 'ok':
+                return 'Base de données de sauvegarde endommagée', 400
+        finally:
+            test_db.close()
+
+        # Sauvegarde automatique de sécurité avant restauration
+        secours = DATA_DIR / 'avant_restauration'
+        secours.mkdir(parents=True, exist_ok=True)
+
+        if DB.exists():
+            shutil.copy2(DB, secours / 'ems_avant_restauration.db')
+
+        # Remplacement de la base
+        shutil.copy2(nouvelle_db, DB)
+
+        # Restauration des photos et pièces jointes
+        nouvelles_uploads = contenu / 'uploads'
+        if nouvelles_uploads.exists():
+            if UPLOAD_DIR.exists():
+                shutil.rmtree(UPLOAD_DIR)
+            shutil.copytree(nouvelles_uploads, UPLOAD_DIR)
+
+        return '''
+        <h2>Restauration terminée avec succès</h2>
+        <p>La base EMS, les photos et les pièces jointes ont été restaurées.</p>
+        <p><a href="/">Retour à EMS</a></p>
+        '''
+
+    except zipfile.BadZipFile:
+        return 'Le fichier de sauvegarde est invalide ou endommagé', 400
+    except Exception as e:
+        return 'Erreur pendant la restauration : ' + str(e), 500
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+# ===== FIN RESTAURATION COMPLETE EMS =====
