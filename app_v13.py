@@ -1,4 +1,7 @@
 import sqlite3, os, re, hmac, uuid, mimetypes, json, base64, urllib.request, urllib.error, zipfile, tempfile, shutil
+import psycopg
+from psycopg.rows import dict_row
+from urllib.parse import quote
 from pathlib import Path
 from datetime import date, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, send_from_directory, flash, Response, jsonify, session
@@ -20,178 +23,109 @@ app.secret_key=os.environ.get('EMS_SECRET_KEY','change-this-secret-before-produc
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('EMS_HTTPS','0')=='1', MAX_CONTENT_LENGTH=40*1024*1024)
 ADMIN_USER=os.environ.get('EMS_ADMIN_USER','admin')
 ADMIN_PASSWORD=os.environ.get('EMS_ADMIN_PASSWORD','change-me')
-# ===== PERSISTANCE SUPABASE EMS =====
-SUPABASE_URL = "https://pseugydjgchwymuoghst.supabase.co"
-SUPABASE_BUCKET = "ems-backups"
 
-def supabase_headers():
-    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
-    return {
-        "Authorization": f"Bearer {key}",
-        "apikey": key,
-    }
-
-def restore_from_supabase():
-    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
-    if not key:
-        return
-
-    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/latest.zip"
-    req = urllib.request.Request(url, headers=supabase_headers(), method="GET")
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return
-        print("Supabase restore HTTP error:", e)
-        return
-    except Exception as e:
-        print("Supabase restore error:", e)
-        return
-
-    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_restore_"))
-    try:
-        zip_path = temp_dir / "latest.zip"
-        zip_path.write_bytes(data)
-
-        extract_dir = temp_dir / "extract"
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(extract_dir)
-
-        new_db = extract_dir / "ems.db"
-        if new_db.exists():
-            test = sqlite3.connect(str(new_db))
-            try:
-                result = test.execute("PRAGMA integrity_check").fetchone()
-                if not result or result[0] != "ok":
-                    print("Supabase restore: DB invalide")
-                    return
-            finally:
-                test.close()
-
-            shutil.copy2(new_db, DB)
-
-        new_uploads = extract_dir / "uploads"
-        if new_uploads.exists():
-            if UPLOAD_DIR.exists():
-                shutil.rmtree(UPLOAD_DIR)
-            shutil.copytree(new_uploads, UPLOAD_DIR)
-
-        print("EMS restaure depuis Supabase")
-
-    except Exception as e:
-        print("Supabase restore extraction error:", e)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def backup_to_supabase():
-    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
-    if not key or not DB.exists():
-        return
-
-    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_backup_"))
-    try:
-        db_copy = temp_dir / "ems.db"
-
-        source = sqlite3.connect(str(DB))
-        destination = sqlite3.connect(str(db_copy))
-        try:
-            source.backup(destination)
-        finally:
-            destination.close()
-            source.close()
-
-        zip_path = temp_dir / "latest.zip"
-
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(db_copy, "ems.db")
-
-            if UPLOAD_DIR.exists():
-                for f in UPLOAD_DIR.rglob("*"):
-                    if f.is_file():
-                        archive.write(
-                            f,
-                            str(Path("uploads") / f.relative_to(UPLOAD_DIR))
-                        )
-
-        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/latest.zip"
-        headers = supabase_headers()
-        headers["Content-Type"] = "application/zip"
-        headers["x-upsert"] = "true"
-
-        req = urllib.request.Request(
-            url,
-            data=zip_path.read_bytes(),
-            headers=headers,
-            method="POST"
-        )
-
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            resp.read()
-
-        print("EMS sauvegarde dans Supabase")
-
-    except Exception as e:
-        print("Supabase backup error:", e)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-@app.after_request
-def sauvegarde_supabase_apres_modification(response):
-    if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 500:
-        try:
-            backup_to_supabase()
-        except Exception as e:
-            print("Erreur sauvegarde automatique:", e)
-    return response
-
-# ===== FIN PERSISTANCE SUPABASE EMS =====
 COMPANY={
  'name':'EMS TMM','address':'Lot K4 107 LD Ivato\nAmbohidratrimo 105 - MADAGASCAR',
  'nif':'5019396150','stat':'45101 11 2025 0 11108','email':'emstamatave@gmail.com','phone':'+261 37 61 700 42',
  'bank':'XBred','bank_code':'00008','branch_code':'00021','account':'05003025816','key':'21'
 }
 
-def db():
-    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+DATABASE_URL=os.environ.get("DATABASE_URL","").strip()
+SUPABASE_URL="https://pseugydjgchwymuoghst.supabase.co"
+SUPABASE_BUCKET=os.environ.get("SUPABASE_FILES_BUCKET","ems-backups")
 
-def ensure_column(c, table, column, definition):
-    cols={r['name'] for r in c.execute(f'PRAGMA table_info({table})').fetchall()}
-    if column not in cols:
-        c.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+class CursorProxy:
+    def __init__(self,cur,lastrowid=None): self.cur,self.lastrowid=cur,lastrowid
+    def fetchone(self): return self.cur.fetchone()
+    def fetchall(self): return self.cur.fetchall()
+    def __iter__(self): return iter(self.cur)
+
+class DBProxy:
+    def __init__(self):
+        if not DATABASE_URL: raise RuntimeError("DATABASE_URL manquante : refus d'utiliser une base locale non persistante.")
+        self.con=psycopg.connect(DATABASE_URL,row_factory=dict_row)
+    def execute(self,sql,params=()):
+        q=sql.replace("?","%s").replace('coalesce(reference,"")',"coalesce(reference,'')")
+        cur=self.con.cursor()
+        if q.lstrip().lower().startswith("insert ") and " returning " not in q.lower():
+            cur.execute(q.rstrip().rstrip(";")+" RETURNING id",params or ())
+            row=cur.fetchone()
+            return CursorProxy(cur,row["id"] if row else None)
+        cur.execute(q,params or ())
+        return CursorProxy(cur)
+    def commit(self): self.con.commit()
+    def rollback(self): self.con.rollback()
+    def close(self): self.con.close()
+
+def db(): return DBProxy()
 
 def init_db():
-    c=db(); c.executescript('''
-    CREATE TABLE IF NOT EXISTS clients(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,address TEXT,nif TEXT,stat TEXT,email TEXT,phone TEXT);
-    CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,number TEXT NOT NULL,doc_date TEXT,due_date TEXT,client_id INTEGER,reference TEXT,po_number TEXT,payment_terms TEXT,delivery TEXT,status TEXT DEFAULT 'Brouillon',notes TEXT DEFAULT '',created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(client_id) REFERENCES clients(id));
-    CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER,description TEXT,qty REAL DEFAULT 1,unit_price REAL DEFAULT 0,FOREIGN KEY(doc_id) REFERENCES docs(id));
-    CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER,payment_date TEXT,amount REAL DEFAULT 0,method TEXT,note TEXT,FOREIGN KEY(doc_id) REFERENCES docs(id));
-    CREATE TABLE IF NOT EXISTS client_attachments(id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER,original_name TEXT,stored_name TEXT,mime TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(client_id) REFERENCES clients(id));
-    CREATE TABLE IF NOT EXISTS client_machine_photos(id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER,original_name TEXT,stored_name TEXT,mime TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(client_id) REFERENCES clients(id));
-    CREATE TABLE IF NOT EXISTS doc_images(id INTEGER PRIMARY KEY AUTOINCREMENT,doc_id INTEGER,original_name TEXT,stored_name TEXT,mime TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(doc_id) REFERENCES docs(id));
-    CREATE TABLE IF NOT EXISTS stock_items(id INTEGER PRIMARY KEY AUTOINCREMENT,reference TEXT UNIQUE,designation TEXT NOT NULL,qty REAL DEFAULT 0,purchase_price REAL DEFAULT 0,sale_price REAL DEFAULT 0,min_qty REAL DEFAULT 0,original_name TEXT,stored_name TEXT,mime TEXT,notes TEXT DEFAULT '',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,item_id INTEGER NOT NULL,move_date TEXT,move_type TEXT NOT NULL,qty REAL NOT NULL,note TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(item_id) REFERENCES stock_items(id));
-    ''')
-    ensure_column(c,'docs','internal_note',"TEXT DEFAULT ''")
-    ensure_column(c,'lines','discount_pct','REAL DEFAULT 0')
-    c.commit(); c.close()
+    con=db()
+    schema=[
+    """CREATE TABLE IF NOT EXISTS clients(id SERIAL PRIMARY KEY,name TEXT NOT NULL,address TEXT,nif TEXT,stat TEXT,email TEXT,phone TEXT)""",
+    """CREATE TABLE IF NOT EXISTS docs(id SERIAL PRIMARY KEY,kind TEXT NOT NULL,number TEXT NOT NULL,doc_date TEXT,due_date TEXT,client_id INTEGER REFERENCES clients(id),reference TEXT,po_number TEXT,payment_terms TEXT,delivery TEXT,status TEXT DEFAULT 'Brouillon',notes TEXT DEFAULT '',internal_note TEXT DEFAULT '',created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS lines(id SERIAL PRIMARY KEY,doc_id INTEGER REFERENCES docs(id) ON DELETE CASCADE,description TEXT,qty DOUBLE PRECISION DEFAULT 1,unit_price DOUBLE PRECISION DEFAULT 0,discount_pct DOUBLE PRECISION DEFAULT 0)""",
+    """CREATE TABLE IF NOT EXISTS payments(id SERIAL PRIMARY KEY,doc_id INTEGER REFERENCES docs(id) ON DELETE CASCADE,payment_date TEXT,amount DOUBLE PRECISION DEFAULT 0,method TEXT,note TEXT)""",
+    """CREATE TABLE IF NOT EXISTS client_attachments(id SERIAL PRIMARY KEY,client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,original_name TEXT,stored_name TEXT,mime TEXT,created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS client_machine_photos(id SERIAL PRIMARY KEY,client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,original_name TEXT,stored_name TEXT,mime TEXT,created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS doc_images(id SERIAL PRIMARY KEY,doc_id INTEGER REFERENCES docs(id) ON DELETE CASCADE,original_name TEXT,stored_name TEXT,mime TEXT,created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS stock_items(id SERIAL PRIMARY KEY,reference TEXT UNIQUE,designation TEXT NOT NULL,qty DOUBLE PRECISION DEFAULT 0,purchase_price DOUBLE PRECISION DEFAULT 0,sale_price DOUBLE PRECISION DEFAULT 0,min_qty DOUBLE PRECISION DEFAULT 0,original_name TEXT,stored_name TEXT,mime TEXT,notes TEXT DEFAULT '',created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS stock_moves(id SERIAL PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,move_date TEXT,move_type TEXT NOT NULL,qty DOUBLE PRECISION NOT NULL,note TEXT,created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)"""
+    ]
+    try:
+        for q in schema: con.execute(q)
+        con.commit()
+    finally: con.close()
 
-def save_upload(file, prefix):
+def supabase_headers(content_type=None):
+    key=os.environ.get("SUPABASE_SECRET_KEY","").strip()
+    if not key: raise RuntimeError("SUPABASE_SECRET_KEY manquante.")
+    h={"Authorization":f"Bearer {key}","apikey":key}
+    if content_type: h["Content-Type"]=content_type
+    return h
+
+def storage_url(stored):
+    return f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{quote('files/'+stored,safe='/')}"
+
+def storage_upload(stored,data,mime):
+    h=supabase_headers(mime or "application/octet-stream"); h["x-upsert"]="true"
+    req=urllib.request.Request(storage_url(stored),data=data,headers=h,method="POST")
+    with urllib.request.urlopen(req,timeout=60) as r: r.read()
+
+def storage_download(stored):
+    req=urllib.request.Request(storage_url(stored),headers=supabase_headers(),method="GET")
+    with urllib.request.urlopen(req,timeout=60) as r: return r.read()
+
+def storage_delete(stored):
+    try:
+        url=f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}"
+        body=json.dumps({"prefixes":[f"files/{stored}"]}).encode()
+        req=urllib.request.Request(url,data=body,headers=supabase_headers("application/json"),method="DELETE")
+        with urllib.request.urlopen(req,timeout=30) as r: r.read()
+    except Exception as e: print("Nettoyage Storage:",e)
+
+def ensure_local_file(stored):
+    p=UPLOAD_DIR/stored
+    if not p.exists(): p.write_bytes(storage_download(stored))
+    return p
+
+def send_stored_file(stored,mime=None,download_name=None):
+    data=storage_download(stored); headers={}
+    if download_name: headers["Content-Disposition"]=f'attachment; filename="{secure_filename(download_name)}"'
+    return Response(data,mimetype=mime or "application/octet-stream",headers=headers)
+
+def save_upload(file,prefix):
     if not file or not file.filename: return None
-    original=secure_filename(file.filename) or 'fichier'
-    ext=Path(original).suffix.lower()
-    stored=f"{prefix}_{uuid.uuid4().hex}{ext}"
-    file.save(UPLOAD_DIR/stored)
-    return original, stored, (file.mimetype or mimetypes.guess_type(original)[0] or 'application/octet-stream')
+    original=secure_filename(file.filename) or "fichier"
+    ext=Path(original).suffix.lower(); stored=f"{prefix}_{uuid.uuid4().hex}{ext}"
+    mime=file.mimetype or mimetypes.guess_type(original)[0] or "application/octet-stream"
+    data=file.read(); file.stream.seek(0)
+    storage_upload(stored,data,mime)
+    (UPLOAD_DIR/stored).write_bytes(data)
+    return original,stored,mime
 
-# Initialise automatiquement la base, y compris avec Gunicorn/Render.
-restore_from_supabase()
+# PostgreSQL Supabase est la source de vérité persistante.
 init_db()
-backup_to_supabase()
 
 def money(v): return f"{float(v or 0):,.0f}".replace(',', ' ')
 
@@ -363,75 +297,83 @@ def logout():
 
 @app.route('/backup')
 def backup_db():
-    if not DB.exists():
-        return 'Aucune base de données',404
-    tmp = Path(tempfile.gettempdir()) / f"ems_backup_{date.today().isoformat()}_{uuid.uuid4().hex[:8]}.zip"
-    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.write(DB, 'ems.db')
-        file_count=0
-        if UPLOAD_DIR.exists():
-            for p in UPLOAD_DIR.rglob('*'):
-                if p.is_file():
-                    z.write(p, f"uploads/{p.relative_to(UPLOAD_DIR)}")
-                    file_count += 1
-        z.writestr('SAUVEGARDE_EMS.txt', f"EMS Facturation V13\\nDate: {date.today().isoformat()}\\nBase: ems.db\\nFichiers/photos: {file_count}\\n")
-    return send_file(tmp, as_attachment=True, download_name=f"EMS_sauvegarde_complete_{date.today().isoformat()}.zip")
+    tables=['clients','docs','lines','payments','client_attachments','client_machine_photos','doc_images','stock_items','stock_moves']
+    con=db(); export={}
+    try:
+        for t in tables:
+            rows=con.execute(f'SELECT * FROM {t} ORDER BY id').fetchall()
+            export[t]=[{k:(v.isoformat() if hasattr(v,'isoformat') else v) for k,v in r.items()} for r in rows]
+    finally: con.close()
+    tmp=Path(tempfile.gettempdir())/f"EMS_export_{date.today().isoformat()}_{uuid.uuid4().hex[:8]}.zip"
+    names={}
+    for t in ('client_attachments','client_machine_photos','doc_images','stock_items'):
+        for r in export.get(t,[]):
+            if r.get('stored_name'): names[r['stored_name']]=r.get('original_name') or r['stored_name']
+    with zipfile.ZipFile(tmp,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr('ems_export.json',json.dumps(export,ensure_ascii=False,indent=2))
+        for stored in names:
+            try: z.writestr(f"files/{stored}",storage_download(stored))
+            except Exception as e: z.writestr(f"errors/{stored}.txt",str(e))
+        z.writestr('SAUVEGARDE_EMS.txt',f"EMS PostgreSQL/Supabase - {date.today().isoformat()}\n")
+    return send_file(tmp,as_attachment=True,download_name=f"EMS_export_{date.today().isoformat()}.zip")
 
-@app.route('/restore', methods=['GET','POST'])
+def _import_old_sqlite(restored_db,restored_uploads):
+    old=sqlite3.connect(restored_db); old.row_factory=sqlite3.Row; new=db()
+    delete_order=['stock_moves','payments','lines','doc_images','client_machine_photos','client_attachments','docs','stock_items','clients']
+    insert_order=list(reversed(delete_order))
+    try:
+        for t in delete_order: new.execute(f'DELETE FROM {t}')
+        new.commit()
+        for t in insert_order:
+            old_cols=[r['name'] for r in old.execute(f'PRAGMA table_info({t})').fetchall()]
+            new_cols=[r['column_name'] for r in new.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=? ORDER BY ordinal_position",(t,)).fetchall()]
+            cols=[c for c in old_cols if c in new_cols]
+            for r in old.execute(f"SELECT {','.join(cols)} FROM {t} ORDER BY id").fetchall():
+                vals=[r[c] for c in cols]
+                cur=new.con.cursor()
+                cur.execute(f"INSERT INTO {t} ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))})",vals)
+            if 'id' in cols:
+                cur=new.con.cursor()
+                cur.execute(f"SELECT setval(pg_get_serial_sequence('{t}','id'), GREATEST(COALESCE((SELECT MAX(id) FROM {t}),1),1), true)")
+        new.commit()
+    except Exception:
+        new.rollback(); raise
+    finally:
+        old.close(); new.close()
+    if restored_uploads.exists():
+        for p in restored_uploads.rglob('*'):
+            if p.is_file():
+                storage_upload(str(p.relative_to(restored_uploads)),p.read_bytes(),mimetypes.guess_type(p.name)[0] or 'application/octet-stream')
+
+@app.route('/restore',methods=['GET','POST'])
 def restore_backup():
-    if request.method == 'POST':
-        f = request.files.get('backup_file')
-        if not f or not f.filename:
-            flash('Choisis un fichier de sauvegarde EMS.')
-            return redirect(url_for('restore_backup'))
-        if not f.filename.lower().endswith('.zip'):
-            flash('Le fichier doit être une sauvegarde EMS au format ZIP.')
-            return redirect(url_for('restore_backup'))
-        work = Path(tempfile.mkdtemp(prefix='ems_restore_'))
+    if request.method=='POST':
+        f=request.files.get('backup_file')
+        if not f or not f.filename or not f.filename.lower().endswith('.zip'):
+            flash('Choisis une ancienne sauvegarde EMS ZIP.'); return redirect(url_for('restore_backup'))
+        work=Path(tempfile.mkdtemp(prefix='ems_migration_'))
         try:
-            archive = work / 'backup.zip'
-            f.save(archive)
-            extract = work / 'extract'
-            extract.mkdir()
-            with zipfile.ZipFile(archive, 'r') as z:
-                # Protection contre les chemins ZIP malveillants
+            archive=work/'backup.zip'; f.save(archive); extract=work/'extract'; extract.mkdir()
+            with zipfile.ZipFile(archive,'r') as z:
                 for member in z.infolist():
-                    target = (extract / member.filename).resolve()
-                    if extract.resolve() not in target.parents and target != extract.resolve():
-                        raise ValueError('Archive invalide')
+                    target=(extract/member.filename).resolve()
+                    if extract.resolve() not in target.parents and target!=extract.resolve(): raise ValueError('Archive invalide')
                 z.extractall(extract)
-            restored_db = extract / 'ems.db'
-            if not restored_db.exists():
-                raise ValueError('Base ems.db absente de la sauvegarde')
-            # Vérifie que la base SQLite est lisible avant remplacement
-            test = sqlite3.connect(restored_db)
-            test.execute('PRAGMA schema_version').fetchone()
+            olddb=extract/'ems.db'
+            if not olddb.exists(): raise ValueError('Base ems.db absente de la sauvegarde V13.')
+            test=sqlite3.connect(olddb)
+            if test.execute('PRAGMA integrity_check').fetchone()[0]!='ok': raise ValueError('Base SQLite endommagée.')
             test.close()
-            shutil.copy2(restored_db, DB)
-            restored_uploads = extract / 'uploads'
-            if UPLOAD_DIR.exists():
-                shutil.rmtree(UPLOAD_DIR)
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-            if restored_uploads.exists():
-                for p in restored_uploads.rglob('*'):
-                    if p.is_file():
-                        dest = UPLOAD_DIR / p.relative_to(restored_uploads)
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(p, dest)
-            init_db()
-            flash('Sauvegarde restaurée avec succès.')
+            _import_old_sqlite(olddb,extract/'uploads')
+            flash('Migration terminée : données et fichiers sont maintenant persistants.')
             return redirect(url_for('home'))
         except Exception as e:
-            flash(f"Restauration impossible : {e}")
-            return redirect(url_for('restore_backup'))
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    return page('''<div class="card"><h2>Restaurer une sauvegarde</h2>
-    <p>Choisis un fichier <b>EMS_sauvegarde_complete_....zip</b>. La restauration remplacera les données actuelles et les photos par celles de la sauvegarde.</p>
-    <form method="post" enctype="multipart/form-data">
-      <p><input type="file" name="backup_file" accept=".zip,application/zip" required></p>
-      <p><button type="submit" onclick="return confirm('Restaurer cette sauvegarde ? Les données actuelles seront remplacées.')">Restaurer</button></p>
-    </form></div>''')
+            flash(f'Migration impossible : {e}'); return redirect(url_for('restore_backup'))
+        finally: shutil.rmtree(work,ignore_errors=True)
+    return page("""<div class="card"><h2>Importer l'ancienne sauvegarde V13</h2>
+    <p>Import unique de l'ancienne base SQLite vers PostgreSQL Supabase.</p>
+    <form method="post" enctype="multipart/form-data"><p><input type="file" name="backup_file" accept=".zip,application/zip" required></p>
+    <p><button type="submit">Importer la sauvegarde V13</button></p></form></div>""")
 
 @app.route('/logo.png')
 def logo(): return send_file(LOGO)
@@ -570,15 +512,16 @@ def add_client_machine_photos(cid):
 def client_machine_photo(cid,pid):
     con=db(); p=con.execute('select * from client_machine_photos where id=? and client_id=?',(pid,cid)).fetchone(); con.close()
     if not p:return 'Photo introuvable',404
-    return send_from_directory(UPLOAD_DIR,p['stored_name'],mimetype=p['mime'])
+    return send_stored_file(p['stored_name'],p['mime'])
 
 @app.post('/client/<int:cid>/machine-photo/<int:pid>/delete')
 def delete_client_machine_photo(cid,pid):
     con=db(); p=con.execute('select * from client_machine_photos where id=? and client_id=?',(pid,cid)).fetchone()
     if p:
         con.execute('delete from client_machine_photos where id=?',(pid,)); con.commit()
-        try:(UPLOAD_DIR/p['stored_name']).unlink(missing_ok=True)
-        except Exception:pass
+        try:
+            (UPLOAD_DIR/p['stored_name']).unlink(missing_ok=True); storage_delete(p['stored_name'])
+        except Exception: pass
     con.close(); flash('Photo supprimée.')
     return redirect(url_for('edit_client',cid=cid))
 
@@ -586,7 +529,7 @@ def delete_client_machine_photo(cid,pid):
 def client_attachment(cid,aid):
     con=db(); a=con.execute('select * from client_attachments where id=? and client_id=?',(aid,cid)).fetchone(); con.close()
     if not a:return 'Pièce jointe introuvable',404
-    return send_from_directory(UPLOAD_DIR,a['stored_name'],download_name=a['original_name'])
+    return send_stored_file(a['stored_name'],a['mime'],a['original_name'])
 
 @app.route('/stock', methods=['GET','POST'])
 def stock():
@@ -609,7 +552,7 @@ def stock():
             if qty:
                 con.execute('insert into stock_moves(item_id,move_date,move_type,qty,note) values(?,?,?,?,?)',(item_id,date.today().isoformat(),'Entrée initiale',qty,'Stock initial'))
             con.commit(); flash('Article ajouté au stock.')
-        except sqlite3.IntegrityError:
+        except psycopg.IntegrityError:
             con.rollback(); flash('Cette référence existe déjà.')
         con.close(); return redirect(url_for('stock'))
     q=(request.args.get('q') or '').strip(); only_low=request.args.get('low')=='1'
@@ -641,7 +584,7 @@ def edit_stock(item_id):
             if saved: con.execute('update stock_items set reference=?,designation=?,purchase_price=?,sale_price=?,min_qty=?,notes=?,original_name=?,stored_name=?,mime=? where id=?',(*vals,*saved,item_id))
             else: con.execute('update stock_items set reference=?,designation=?,purchase_price=?,sale_price=?,min_qty=?,notes=? where id=?',(*vals,item_id))
             con.commit(); flash('Article mis à jour.')
-        except sqlite3.IntegrityError: con.rollback(); flash('Cette référence existe déjà.')
+        except psycopg.IntegrityError: con.rollback(); flash('Cette référence existe déjà.')
         con.close(); return redirect(url_for('edit_stock',item_id=item_id))
     moves=con.execute('select * from stock_moves where item_id=? order by id desc limit 100',(item_id,)).fetchall(); con.close()
     photo=f"<p><a class='btn2' href='/stock/{item_id}/photo' target='_blank'>Voir la photo actuelle</a></p>" if r['stored_name'] else ''
@@ -664,7 +607,7 @@ def stock_move(item_id):
 def stock_photo(item_id):
     con=db(); r=con.execute('select * from stock_items where id=?',(item_id,)).fetchone(); con.close()
     if not r or not r['stored_name']: return 'Photo introuvable',404
-    return send_from_directory(UPLOAD_DIR,r['stored_name'],mimetype=r['mime'],download_name=r['original_name'])
+    return send_stored_file(r['stored_name'],r['mime'],r['original_name'])
 
 @app.route('/documents')
 def documents():
@@ -694,7 +637,7 @@ def new_document():
 
 @app.route('/document/<int:doc_id>')
 def document(doc_id):
-    con=db(); d=con.execute('''select d.*,c.name client,c.address,c.nif,c.stat,c.email,c.phone from docs d left join clients c on c.id=d.client_id where d.id=?''',(doc_id,)).fetchone(); lines=con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall(); images=con.execute('select * from doc_images where doc_id=? order by id',(doc_id,)).fetchall(); images=con.execute('select * from doc_images where doc_id=? order by id',(doc_id,)).fetchall(); pays=con.execute('select * from payments where doc_id=? order by payment_date desc,id desc',(doc_id,)).fetchall();
+    con=db(); d=con.execute('''select d.*,c.name client,c.address,c.nif,c.stat,c.email,c.phone from docs d left join clients c on c.id=d.client_id where d.id=?''',(doc_id,)).fetchone(); lines=con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall(); images=con.execute('select * from doc_images where doc_id=? order by id',(doc_id,)).fetchall(); pays=con.execute('select * from payments where doc_id=? order by payment_date desc,id desc',(doc_id,)).fetchall();
     if not d: con.close(); return 'Document introuvable',404
     total=total_for(con,doc_id); paid=paid_for(con,doc_id); con.close(); balance=max(0,total-paid)
     trs=''.join(f"<tr><td>{l['description']}</td><td>{l['qty']:g}</td><td class='right'>{money(l['unit_price'])}</td><td class='right'>{float(l['discount_pct'] or 0):g}%</td><td class='right'>{money(l['qty']*l['unit_price']*(1-float(l['discount_pct'] or 0)/100))}</td></tr>" for l in lines)
@@ -724,7 +667,7 @@ def edit_document(doc_id):
 def document_image(doc_id,iid):
     con=db(); im=con.execute('select * from doc_images where id=? and doc_id=?',(iid,doc_id)).fetchone(); con.close()
     if not im:return 'Image introuvable',404
-    return send_from_directory(UPLOAD_DIR,im['stored_name'],mimetype=im['mime'])
+    return send_stored_file(im['stored_name'],im['mime'])
 
 @app.post('/document/<int:doc_id>/convert')
 def convert(doc_id):
@@ -811,7 +754,7 @@ def pdf(doc_id):
         c.showPage(); c.setFont('Helvetica-Bold',14); c.drawString(L,H-18*mm,f"Photos — {d['kind']} {d['number']}")
         px=L; py=H-32*mm; cellw=84*mm; cellh=62*mm; col=0
         for im in images:
-            path=UPLOAD_DIR/im['stored_name']
+            path=ensure_local_file(im['stored_name'])
             try:
                 c.drawImage(ImageReader(str(path)),px,py-cellh,width=cellw,height=cellh,preserveAspectRatio=True,anchor='c',mask='auto')
                 c.setFont('Helvetica',7); c.drawString(px,py-cellh-4*mm,(im['original_name'] or '')[:45])
@@ -826,147 +769,3 @@ def pdf(doc_id):
 
 if __name__=='__main__':
     init_db(); app.run(host='0.0.0.0',port=5000,debug=False)
-
-
-# ===== SAUVEGARDE COMPLETE EMS =====
-@app.route('/backup-complet')
-def backup_complet():
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-
-    backup_dir = DATA_DIR / 'backups'
-    backup_dir.mkdir(parents=True, exist_ok=True)
-
-    backup_name = f"EMS_sauvegarde_{date.today().isoformat()}.zip"
-    backup_path = backup_dir / backup_name
-
-    # Copie SQLite cohérente même si EMS est utilisé
-    db_copy = backup_dir / 'ems.db'
-    source = sqlite3.connect(str(DB))
-    destination = sqlite3.connect(str(db_copy))
-    try:
-        source.backup(destination)
-    finally:
-        destination.close()
-        source.close()
-
-    try:
-        with zipfile.ZipFile(
-            backup_path, 'w', zipfile.ZIP_DEFLATED
-        ) as archive:
-            archive.write(db_copy, 'ems.db')
-
-            if UPLOAD_DIR.exists():
-                for fichier in UPLOAD_DIR.rglob('*'):
-                    if fichier.is_file():
-                        archive.write(
-                            fichier,
-                            str(Path('uploads') / fichier.relative_to(UPLOAD_DIR))
-                        )
-    finally:
-        if db_copy.exists():
-            db_copy.unlink()
-
-    return send_file(
-        backup_path,
-        as_attachment=True,
-        download_name=backup_name,
-        mimetype='application/zip'
-    )
-# ===== FIN SAUVEGARDECOMPLETE EMS =====
-# ===== RESTAURATION COMPLETE EMS =====
-@app.route('/restauration', methods=['GET', 'POST'])
-def restauration():
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-
-    if request.method == 'GET':
-        return '''
-        <!doctype html>
-        <html lang="fr">
-        <head>
-            <meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>Restauration EMS</title>
-        </head>
-        <body style="font-family:Arial;padding:25px;max-width:600px;margin:auto">
-            <h2>Restauration EMS</h2>
-            <p><b>Attention :</b> cette opération remplace les données actuelles.</p>
-            <form method="post" enctype="multipart/form-data">
-                <input type="file" name="backup" accept=".zip" required>
-                <br><br>
-                <button type="submit"
-                    style="padding:14px 20px;font-size:16px">
-                    Restaurer la sauvegarde
-                </button>
-            </form>
-        </body>
-        </html>
-        '''
-
-    fichier = request.files.get('backup')
-    if not fichier or not fichier.filename.lower().endswith('.zip'):
-        return 'Fichier ZIP invalide', 400
-
-    temp_dir = Path(tempfile.mkdtemp(prefix='ems_restore_'))
-
-    try:
-        zip_path = temp_dir / 'backup.zip'
-        fichier.save(zip_path)
-
-        with zipfile.ZipFile(zip_path, 'r') as archive:
-            noms = archive.namelist()
-
-            if 'ems.db' not in noms:
-                return 'Sauvegarde invalide : ems.db absent', 400
-
-            # Protection contre les chemins dangereux dans le ZIP
-            for nom in noms:
-                p = Path(nom)
-                if p.is_absolute() or '..' in p.parts:
-                    return 'Sauvegarde ZIP non autorisée', 400
-
-            archive.extractall(temp_dir / 'contenu')
-
-        contenu = temp_dir / 'contenu'
-        nouvelle_db = contenu / 'ems.db'
-
-        # Vérification de la base avant remplacement
-        test_db = sqlite3.connect(str(nouvelle_db))
-        try:
-            resultat = test_db.execute('PRAGMA integrity_check').fetchone()
-            if not resultat or resultat[0] != 'ok':
-                return 'Base de données de sauvegarde endommagée', 400
-        finally:
-            test_db.close()
-
-        # Sauvegarde automatique de sécurité avant restauration
-        secours = DATA_DIR / 'avant_restauration'
-        secours.mkdir(parents=True, exist_ok=True)
-
-        if DB.exists():
-            shutil.copy2(DB, secours / 'ems_avant_restauration.db')
-
-        # Remplacement de la base
-        shutil.copy2(nouvelle_db, DB)
-
-        # Restauration des photos et pièces jointes
-        nouvelles_uploads = contenu / 'uploads'
-        if nouvelles_uploads.exists():
-            if UPLOAD_DIR.exists():
-                shutil.rmtree(UPLOAD_DIR)
-            shutil.copytree(nouvelles_uploads, UPLOAD_DIR)
-
-        return '''
-        <h2>Restauration terminée avec succès</h2>
-        <p>La base EMS, les photos et les pièces jointes ont été restaurées.</p>
-        <p><a href="/">Retour à EMS</a></p>
-        '''
-
-    except zipfile.BadZipFile:
-        return 'Le fichier de sauvegarde est invalide ou endommagé', 400
-    except Exception as e:
-        return 'Erreur pendant la restauration : ' + str(e), 500
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-# ===== FIN RESTAURATION COMPLETE EMS =====
