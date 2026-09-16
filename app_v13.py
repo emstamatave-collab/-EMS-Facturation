@@ -20,7 +20,136 @@ app.secret_key=os.environ.get('EMS_SECRET_KEY','change-this-secret-before-produc
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('EMS_HTTPS','0')=='1', MAX_CONTENT_LENGTH=40*1024*1024)
 ADMIN_USER=os.environ.get('EMS_ADMIN_USER','admin')
 ADMIN_PASSWORD=os.environ.get('EMS_ADMIN_PASSWORD','change-me')
+# ===== PERSISTANCE SUPABASE EMS =====
+SUPABASE_URL = "https://pseugydjgchwymuoghst.supabase.co"
+SUPABASE_BUCKET = "ems-backups"
 
+def supabase_headers():
+    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+    return {
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
+    }
+
+def restore_from_supabase():
+    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+    if not key:
+        return
+
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/latest.zip"
+    req = urllib.request.Request(url, headers=supabase_headers(), method="GET")
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return
+        print("Supabase restore HTTP error:", e)
+        return
+    except Exception as e:
+        print("Supabase restore error:", e)
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_restore_"))
+    try:
+        zip_path = temp_dir / "latest.zip"
+        zip_path.write_bytes(data)
+
+        extract_dir = temp_dir / "extract"
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(extract_dir)
+
+        new_db = extract_dir / "ems.db"
+        if new_db.exists():
+            test = sqlite3.connect(str(new_db))
+            try:
+                result = test.execute("PRAGMA integrity_check").fetchone()
+                if not result or result[0] != "ok":
+                    print("Supabase restore: DB invalide")
+                    return
+            finally:
+                test.close()
+
+            shutil.copy2(new_db, DB)
+
+        new_uploads = extract_dir / "uploads"
+        if new_uploads.exists():
+            if UPLOAD_DIR.exists():
+                shutil.rmtree(UPLOAD_DIR)
+            shutil.copytree(new_uploads, UPLOAD_DIR)
+
+        print("EMS restaure depuis Supabase")
+
+    except Exception as e:
+        print("Supabase restore extraction error:", e)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def backup_to_supabase():
+    key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+    if not key or not DB.exists():
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_backup_"))
+    try:
+        db_copy = temp_dir / "ems.db"
+
+        source = sqlite3.connect(str(DB))
+        destination = sqlite3.connect(str(db_copy))
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+
+        zip_path = temp_dir / "latest.zip"
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(db_copy, "ems.db")
+
+            if UPLOAD_DIR.exists():
+                for f in UPLOAD_DIR.rglob("*"):
+                    if f.is_file():
+                        archive.write(
+                            f,
+                            str(Path("uploads") / f.relative_to(UPLOAD_DIR))
+                        )
+
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/latest.zip"
+        headers = supabase_headers()
+        headers["Content-Type"] = "application/zip"
+        headers["x-upsert"] = "true"
+
+        req = urllib.request.Request(
+            url,
+            data=zip_path.read_bytes(),
+            headers=headers,
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            resp.read()
+
+        print("EMS sauvegarde dans Supabase")
+
+    except Exception as e:
+        print("Supabase backup error:", e)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@app.after_request
+def sauvegarde_supabase_apres_modification(response):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 500:
+        try:
+            backup_to_supabase()
+        except Exception as e:
+            print("Erreur sauvegarde automatique:", e)
+    return response
+
+# ===== FIN PERSISTANCE SUPABASE EMS =====
 COMPANY={
  'name':'EMS TMM','address':'Lot K4 107 LD Ivato\nAmbohidratrimo 105 - MADAGASCAR',
  'nif':'5019396150','stat':'45101 11 2025 0 11108','email':'emstamatave@gmail.com','phone':'+261 37 61 700 42',
