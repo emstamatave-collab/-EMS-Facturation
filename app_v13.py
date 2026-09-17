@@ -803,6 +803,15 @@ def pdf(doc_id):
         h=8*mm; c.rect(x1,y-h,x6-x1,h,fill=0,stroke=1); [c.line(x,y,x,y-h) for x in [x2,x3,x4,x5]]; c.drawString(x1+2*mm,y-5.2*mm,(l['description'] or '')[:45]); c.drawRightString(x3-2*mm,y-5.2*mm,f"{l['qty']:g}"); c.drawRightString(x4-2*mm,y-5.2*mm,money(l['unit_price'])); c.drawRightString(x5-2*mm,y-5.2*mm,f"{float(l['discount_pct'] or 0):g}%"); net=l['qty']*l['unit_price']*(1-float(l['discount_pct'] or 0)/100); c.drawRightString(x6-2*mm,y-5.2*mm,money(net)); y-=h
     y-=1*mm; c.setFillColorRGB(.68,.66,.66); c.rect(100*mm,y-8*mm,R-100*mm,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0); c.setFont('Helvetica-Bold',9.5); c.drawString(103*mm,y-5.5*mm,'TOTAL en Ariary'); c.drawRightString(R-2*mm,y-5.5*mm,money(total)); y-=25*mm
     c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Arrêté à la somme de :'); c.setFont('Helvetica',9); c.drawString(L+44*mm,y,number_words(total)+'.')
+    if (d['notes'] or '').strip():
+        y -= 7*mm
+        c.setFont('Helvetica-Bold',9)
+        c.drawString(L+5*mm,y,'Notes :')
+        y -= 5*mm
+        c.setFont('Helvetica',9)
+        for note_line in (d['notes'] or '').splitlines():
+            c.drawString(L+5*mm,y,note_line[:100])
+            y -= 5*mm    
     # bottom reference block fixed near bottom
     by=50*mm; c.setFillColorRGB(.7,.69,.69); c.rect(L,by,R-L,40*mm,fill=1,stroke=0); c.setFillColorRGB(.45,.43,.43); c.rect(L+2*mm,by+32*mm,R-L-4*mm,7*mm,fill=1,stroke=0); c.setFillColorRGB(0,0,0); c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,by+34*mm,'RÉFÉRENCE :'); c.setFont('Helvetica-Bold',8.5); c.drawString(L+4*mm,by+25*mm,f"Devis : {'-' if d['kind']=='Devis' else ''}"); c.drawString(L+4*mm,by+19*mm,f"Bon de commande : {d['po_number'] or ''}"); c.drawString(L+4*mm,by+13*mm,f"Modalité du règlement : {d['payment_terms'] or ''}"); c.drawString(L+4*mm,by+7*mm,f"Date et lieu de livraison : {d['delivery'] or ''}")
     c.setFont('Helvetica-Bold',9); c.drawString(L+10*mm,41*mm,'Coordonnées bancaires de la société :'); c.setFillColorRGB(.78,.77,.77); c.rect(L,19*mm,R-L,18*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0); c.setFont('Helvetica',8.5); c.drawString(L+2*mm,32*mm,f"Banque : {COMPANY['bank']}"); c.setFont('Helvetica-Bold',8); heads=['Code banque','Code guichet','N° de compte','Clé']; vals=[COMPANY['bank_code'],COMPANY['branch_code'],COMPANY['account'],COMPANY['key']]; xs=[L+30*mm,L+72*mm,L+120*mm,L+164*mm]
