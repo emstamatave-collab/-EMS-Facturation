@@ -55,7 +55,8 @@ else:
         # SQLite utilise ? ; psycopg utilise %s.
         s = s.replace("?", "%s")
         # Quelques requêtes V13 utilisent "" pour chaîne vide (SQLite).
-        s = s.replace('""', "''")
+        s = s.replace('""', "''")   
+        s = s.replace("group by d.id order by d.id desc limit 6", "group by d.id, c.name order by d.id desc limit 6")
         return s
 
 
