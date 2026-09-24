@@ -473,3 +473,183 @@ else:
         legacy.app.view_functions["health"] = health_v14
 
     app = legacy.app
+
+
+# ===== INTEGRATION SITE EMS -> DEVIS BROUILLON =====
+def _site_api_authorized():
+    expected = os.environ.get("EMS_SITE_API_KEY", "").strip()
+    provided = request.headers.get("X-EMS-Site-Key", "").strip()
+    auth = request.headers.get("Authorization", "").strip()
+    if not provided and auth.lower().startswith("bearer "):
+        provided = auth[7:].strip()
+    return bool(expected) and bool(provided) and legacy.hmac.compare_digest(provided, expected)
+
+
+def _clean_site_text(value, max_len=500):
+    return str(value or "").strip()[:max_len]
+
+
+@app.post("/api/site/part-request")
+def site_request_api():
+    """Crée un devis brouillon EMS depuis une demande de pièce du site."""
+    if not _site_api_authorized():
+        return jsonify({"ok": False, "error": "Non autorisé"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    client = payload.get("client") or {}
+    items = payload.get("items") or []
+
+    if not items and any(payload.get(k) for k in ("reference", "designation", "qty", "quantity")):
+        items = [{
+            "reference": payload.get("reference"),
+            "designation": payload.get("designation"),
+            "qty": payload.get("qty", payload.get("quantity", 1)),
+        }]
+
+    if not isinstance(items, list) or not items:
+        return jsonify({"ok": False, "error": "Aucune pièce dans la demande."}), 400
+
+    normalized_items = []
+    for item in items[:100]:
+        if not isinstance(item, dict):
+            continue
+        ref = _clean_site_text(item.get("reference"), 120)
+        designation = _clean_site_text(item.get("designation"), 1200)
+        qty = max(0.01, legacy.parse_decimal(item.get("qty", item.get("quantity", 1)), 1))
+        if not ref and not designation:
+            continue
+        description = ""
+        if ref:
+            description += f"Réf. MMS : {ref}"
+        if designation:
+            description += ("\n" if description else "") + designation
+        normalized_items.append((ref, designation, description, qty))
+
+    if not normalized_items:
+        return jsonify({"ok": False, "error": "Aucune pièce exploitable dans la demande."}), 400
+
+    name = _clean_site_text(client.get("name") or client.get("company") or payload.get("company"), 250)
+    email = _clean_site_text(client.get("email") or payload.get("email"), 250)
+    phone = _clean_site_text(client.get("phone") or payload.get("phone"), 120)
+    address = _clean_site_text(client.get("address") or payload.get("address"), 1000)
+    nif = _clean_site_text(client.get("nif") or payload.get("nif"), 120)
+    stat = _clean_site_text(client.get("stat") or payload.get("stat"), 120)
+
+    if not name:
+        name = email or phone or "Demande site EMS"
+
+    request_id = re.sub(r"[^A-Za-z0-9._:-]", "", _clean_site_text(payload.get("request_id"), 120))
+    source = _clean_site_text(payload.get("source") or "emstamatave.mg", 250)
+    customer_message = _clean_site_text(payload.get("message"), 3000)
+    delivery_mode = _clean_site_text(payload.get("delivery_mode"), 500)
+
+    con = legacy.db()
+    try:
+        if request_id:
+            marker = f"[EMS_SITE_REQUEST:{request_id}]"
+            existing = con.execute(
+                "select id, number from docs where internal_note like ? order by id desc limit 1",
+                (f"%{marker}%",)
+            ).fetchone()
+            if existing:
+                did = existing["id"]
+                base = request.host_url.rstrip("/")
+                return jsonify({
+                    "ok": True,
+                    "duplicate": True,
+                    "document_id": did,
+                    "number": existing["number"],
+                    "document_url": f"{base}/document/{did}",
+                    "edit_url": f"{base}/document/{did}/edit",
+                })
+
+        existing_client = None
+        if email:
+            existing_client = con.execute(
+                "select * from clients where lower(coalesce(email,''))=lower(?) order by id limit 1",
+                (email,)
+            ).fetchone()
+        if not existing_client and phone:
+            existing_client = con.execute(
+                "select * from clients where coalesce(phone,'')=? order by id limit 1",
+                (phone,)
+            ).fetchone()
+        if not existing_client and name:
+            existing_client = con.execute(
+                "select * from clients where lower(name)=lower(?) order by id limit 1",
+                (name,)
+            ).fetchone()
+
+        if existing_client:
+            cid = existing_client["id"]
+            con.execute(
+                """update clients set
+                   address=case when coalesce(address,'')='' then ? else address end,
+                   nif=case when coalesce(nif,'')='' then ? else nif end,
+                   stat=case when coalesce(stat,'')='' then ? else stat end,
+                   email=case when coalesce(email,'')='' then ? else email end,
+                   phone=case when coalesce(phone,'')='' then ? else phone end
+                   where id=?""",
+                (address, nif, stat, email, phone, cid)
+            )
+        else:
+            cur = con.execute(
+                "insert into clients(name,address,nif,stat,email,phone) values(?,?,?,?,?,?)",
+                (name, address, nif, stat, email, phone)
+            )
+            cid = cur.lastrowid
+
+        number = legacy.next_number("Devis")
+        today = date.today()
+        first_ref = normalized_items[0][0]
+        reference = _clean_site_text(
+            payload.get("document_reference")
+            or (f"Demande site EMS — {first_ref}" if first_ref else "Demande de pièces — site EMS"),
+            500
+        )
+        marker = f"[EMS_SITE_REQUEST:{request_id}]" if request_id else "[EMS_SITE_REQUEST]"
+        internal_note = (
+            f"{marker}\n"
+            f"Créé automatiquement depuis {source}.\n"
+            f"Demande client reçue via le site EMS."
+        )
+        if customer_message:
+            internal_note += f"\nMessage client : {customer_message}"
+
+        cur = con.execute(
+            """insert into docs(
+               kind,number,doc_date,due_date,client_id,reference,po_number,
+               payment_terms,delivery,status,notes,internal_note
+               ) values(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "Devis", number, today.isoformat(), (today + legacy.timedelta(days=30)).isoformat(),
+                cid, reference, "", "À définir", delivery_mode, "Brouillon", "", internal_note
+            )
+        )
+        did = cur.lastrowid
+
+        for _ref, _designation, description, qty in normalized_items:
+            con.execute(
+                "insert into lines(doc_id,description,qty,unit_price,discount_pct) values(?,?,?,?,?)",
+                (did, description, qty, 0, 0)
+            )
+
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "ok": True,
+        "duplicate": False,
+        "document_id": did,
+        "number": number,
+        "client_id": cid,
+        "document_url": f"{base}/document/{did}",
+        "edit_url": f"{base}/document/{did}/edit",
+        "status": "Brouillon",
+    }), 201
+# ===== FIN INTEGRATION SITE EMS -> DEVIS BROUILLON =====
