@@ -653,3 +653,249 @@ def site_request_api():
         "status": "Brouillon",
     }), 201
 # ===== FIN INTEGRATION SITE EMS -> DEVIS BROUILLON =====
+
+
+# ===== FORMULAIRE PUBLIC EMS SANS WORDPRESS =====
+_SITE_FORM_TEMPLATE = r"""
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demande de pièce EMS</title>
+<style>
+:root{--green:#07552d;--green2:#0b6f3d;--ink:#18221c;--muted:#667085;--line:#d9e2dc;--bg:#f5f8f6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink)}
+.wrap{max-width:860px;margin:0 auto;padding:18px}
+.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 12px 35px rgba(0,0,0,.06)}
+.brand{font-weight:800;color:var(--green);font-size:14px;letter-spacing:.06em;text-transform:uppercase}
+h1{font-size:30px;line-height:1.15;margin:8px 0 8px}
+.intro{margin:0 0 22px;color:var(--muted);line-height:1.5}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.field{display:flex;flex-direction:column;gap:7px}
+.field.full{grid-column:1/-1}
+label{font-weight:700;font-size:14px}
+input,textarea,select{width:100%;border:1px solid #cfd8d3;border-radius:11px;padding:13px 14px;font:inherit;background:#fff}
+textarea{min-height:120px;resize:vertical}
+button{width:100%;margin-top:18px;border:0;border-radius:12px;background:var(--green);color:#fff;padding:14px 18px;font-weight:800;font-size:16px}
+.notice{border-radius:12px;padding:13px 14px;margin:0 0 18px;font-weight:650;line-height:1.4}
+.notice.ok{background:#eaf7ef;color:#07552d;border:1px solid #bfe2cb}
+.notice.err{background:#fff0f0;color:#8d1f1f;border:1px solid #efc7c7}
+.back{display:inline-block;margin-top:18px;color:var(--green);font-weight:700;text-decoration:none}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+@media(max-width:650px){.wrap{padding:10px}.card{padding:18px;border-radius:14px}.grid{grid-template-columns:1fr}.field.full{grid-column:auto}h1{font-size:26px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="brand">Europe Manutention Service — Tamatave</div>
+    <h1>Demande de pièce</h1>
+    <p class="intro">Envoyez votre référence ou la désignation de la pièce. Votre dossier est préparé automatiquement pour accélérer le chiffrage.</p>
+    {% if success %}<div class="notice ok">{{ success }}</div>{% endif %}
+    {% if error %}<div class="notice err">{{ error }}</div>{% endif %}
+    <form method="post" action="/demande-piece">
+      <input type="hidden" name="token" value="{{ token }}">
+      <div class="hp" aria-hidden="true"><label>Site web<input name="website" tabindex="-1" autocomplete="off"></label></div>
+      <div class="grid">
+        <div class="field"><label>Société</label><input name="company" value="{{ values.company }}" autocomplete="organization"></div>
+        <div class="field"><label>Nom / prénom</label><input name="name" value="{{ values.name }}" autocomplete="name"></div>
+        <div class="field"><label>E-mail *</label><input name="email" type="email" value="{{ values.email }}" autocomplete="email" required></div>
+        <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" type="tel" value="{{ values.phone }}" autocomplete="tel"></div>
+        <div class="field"><label>Pays</label><input name="country" value="{{ values.country }}" autocomplete="country-name"></div>
+        <div class="field"><label>Quantité *</label><input name="qty" type="number" min="0.01" step="0.01" value="{{ values.qty }}" required></div>
+        <div class="field"><label>Référence MMS</label><input name="reference" value="{{ values.reference }}"></div>
+        <div class="field"><label>Désignation</label><input name="designation" value="{{ values.designation }}"></div>
+        <div class="field full">
+          <label>Livraison / retrait</label>
+          <select name="delivery_mode">
+            <option value="Expédition Madagascar" {% if values.delivery_mode == 'Expédition Madagascar' %}selected{% endif %}>Expédition à Madagascar</option>
+            <option value="Retrait France par transitaire" {% if values.delivery_mode == 'Retrait France par transitaire' %}selected{% endif %}>Retrait en France par mon transitaire</option>
+            <option value="À définir" {% if values.delivery_mode == 'À définir' %}selected{% endif %}>À définir</option>
+          </select>
+        </div>
+        <div class="field full"><label>Message</label><textarea name="message" placeholder="Précisions sur la pièce, le matériel, le numéro de série…">{{ values.message }}</textarea></div>
+      </div>
+      <button type="submit">Envoyer ma demande de pièce</button>
+    </form>
+    <a class="back" href="https://emstamatave.mg/">← Retour au site EMS</a>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+def _public_form_values(source=None):
+    source = source or {}
+    return {
+        "company": _clean_site_text(source.get("company"), 250),
+        "name": _clean_site_text(source.get("name"), 250),
+        "email": _clean_site_text(source.get("email"), 250),
+        "phone": _clean_site_text(source.get("phone"), 120),
+        "country": _clean_site_text(source.get("country") or "Madagascar", 120),
+        "qty": _clean_site_text(source.get("qty") or "1", 30),
+        "reference": _clean_site_text(source.get("reference") or source.get("ref"), 120),
+        "designation": _clean_site_text(source.get("designation"), 1200),
+        "delivery_mode": _clean_site_text(source.get("delivery_mode") or "Expédition Madagascar", 500),
+        "message": _clean_site_text(source.get("message"), 3000),
+    }
+
+
+def _create_quote_from_public_form(values):
+    email = values["email"]
+    reference = values["reference"]
+    designation = values["designation"]
+    if not email or "@" not in email or (not reference and not designation):
+        raise ValueError("Merci de renseigner un e-mail valide et la référence ou la désignation de la pièce.")
+
+    qty = max(0.01, legacy.parse_decimal(values["qty"], 1))
+    company = values["company"]
+    person = values["name"]
+    client_name = company or person or email
+    if company and person:
+        client_name = f"{company} — {person}"
+
+    con = legacy.db()
+    try:
+        existing_client = con.execute(
+            "select * from clients where lower(coalesce(email,''))=lower(?) order by id limit 1",
+            (email,)
+        ).fetchone()
+        if not existing_client and values["phone"]:
+            existing_client = con.execute(
+                "select * from clients where coalesce(phone,'')=? order by id limit 1",
+                (values["phone"],)
+            ).fetchone()
+        if not existing_client and client_name:
+            existing_client = con.execute(
+                "select * from clients where lower(name)=lower(?) order by id limit 1",
+                (client_name,)
+            ).fetchone()
+
+        if existing_client:
+            cid = existing_client["id"]
+            con.execute(
+                """update clients set
+                   address=case when coalesce(address,'')='' then ? else address end,
+                   email=case when coalesce(email,'')='' then ? else email end,
+                   phone=case when coalesce(phone,'')='' then ? else phone end
+                   where id=?""",
+                (values["country"], email, values["phone"], cid)
+            )
+        else:
+            cur = con.execute(
+                "insert into clients(name,address,nif,stat,email,phone) values(?,?,?,?,?,?)",
+                (client_name, values["country"], "", "", email, values["phone"])
+            )
+            cid = cur.lastrowid
+
+        number = legacy.next_number("Devis")
+        today = date.today()
+        request_id = f"WEBFORM-{today.strftime('%Y%m%d')}-{legacy.uuid.uuid4().hex[:8]}"
+        doc_reference = f"Demande site EMS — {reference}" if reference else "Demande de pièces — site EMS"
+        internal_note = (
+            f"[EMS_SITE_REQUEST:{request_id}]\n"
+            f"Créé automatiquement depuis le formulaire public EMS.\n"
+            f"Demande client reçue via le formulaire EMS."
+        )
+        if values["message"]:
+            internal_note += f"\nMessage client : {values['message']}"
+
+        cur = con.execute(
+            """insert into docs(
+               kind,number,doc_date,due_date,client_id,reference,po_number,
+               payment_terms,delivery,status,notes,internal_note
+               ) values(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "Devis", number, today.isoformat(), (today + legacy.timedelta(days=30)).isoformat(),
+                cid, doc_reference, "", "À définir", values["delivery_mode"], "Brouillon", "", internal_note
+            )
+        )
+        did = cur.lastrowid
+
+        description = ""
+        if reference:
+            description += f"Réf. MMS : {reference}"
+        if designation:
+            description += ("\n" if description else "") + designation
+        con.execute(
+            "insert into lines(doc_id,description,qty,unit_price,discount_pct) values(?,?,?,?,?)",
+            (did, description, qty, 0, 0)
+        )
+        con.commit()
+        return did, number
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+@app.route("/demande-piece", methods=["GET", "POST"])
+def site_part_form():
+    if request.method == "GET":
+        values = _public_form_values(request.args)
+        token = legacy.uuid.uuid4().hex
+        legacy.session["site_part_form_token"] = token
+        return legacy.render_template_string(
+            _SITE_FORM_TEMPLATE, values=values, token=token, success="", error=""
+        )
+
+    values = _public_form_values(request.form)
+
+    if _clean_site_text(request.form.get("website"), 250):
+        token = legacy.uuid.uuid4().hex
+        legacy.session["site_part_form_token"] = token
+        return legacy.render_template_string(
+            _SITE_FORM_TEMPLATE,
+            values=_public_form_values({}),
+            token=token,
+            success="Votre demande a bien été reçue.",
+            error=""
+        )
+
+    expected = str(legacy.session.get("site_part_form_token") or "")
+    provided = _clean_site_text(request.form.get("token"), 200)
+    if not expected or not provided or not legacy.hmac.compare_digest(expected, provided):
+        token = legacy.uuid.uuid4().hex
+        legacy.session["site_part_form_token"] = token
+        return legacy.render_template_string(
+            _SITE_FORM_TEMPLATE,
+            values=values,
+            token=token,
+            success="",
+            error="La session du formulaire a expiré. Merci de réessayer."
+        ), 403
+
+    try:
+        did, number = _create_quote_from_public_form(values)
+    except ValueError as e:
+        token = legacy.uuid.uuid4().hex
+        legacy.session["site_part_form_token"] = token
+        return legacy.render_template_string(
+            _SITE_FORM_TEMPLATE, values=values, token=token, success="", error=str(e)
+        ), 400
+    except Exception:
+        token = legacy.uuid.uuid4().hex
+        legacy.session["site_part_form_token"] = token
+        return legacy.render_template_string(
+            _SITE_FORM_TEMPLATE,
+            values=values,
+            token=token,
+            success="",
+            error="La demande n’a pas pu être enregistrée pour le moment. Merci de réessayer."
+        ), 500
+
+    legacy.session.pop("site_part_form_token", None)
+    token = legacy.uuid.uuid4().hex
+    legacy.session["site_part_form_token"] = token
+    return legacy.render_template_string(
+        _SITE_FORM_TEMPLATE,
+        values=_public_form_values({}),
+        token=token,
+        success=f"Votre demande est bien enregistrée. Dossier {number}. EMS revient vers vous rapidement.",
+        error=""
+    )
+# ===== FIN FORMULAIRE PUBLIC EMS SANS WORDPRESS =====
