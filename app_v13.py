@@ -338,7 +338,7 @@ LOGIN_TPL='''<!doctype html><html><head><meta charset="utf-8"><meta name="viewpo
 
 @app.before_request
 def require_login():
-    allowed={'login','health','manifest','service_worker','icon180','icon192','icon512','logo'}
+    allowed={'login','health','manifest','service_worker','icon180','icon192','icon512','logo','site_request_api'}
     if request.endpoint in allowed or request.path.startswith('/static/'):
         return None
     if not session.get('logged_in'):
