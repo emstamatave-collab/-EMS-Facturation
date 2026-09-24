@@ -635,6 +635,7 @@ def site_request_api():
             )
 
         con.commit()
+        print(f"EMS_NOTIFY_EMAIL document_id={did} number={number}", flush=True)
     except Exception:
         con.rollback()
         raise
@@ -825,6 +826,7 @@ def _create_quote_from_public_form(values):
             (did, description, qty, 0, 0)
         )
         con.commit()
+        print(f"EMS_NOTIFY_EMAIL document_id={did} number={number}", flush=True)
         return did, number
     except Exception:
         con.rollback()
