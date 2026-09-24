@@ -899,3 +899,37 @@ def site_part_form():
         error=""
     )
 # ===== FIN FORMULAIRE PUBLIC EMS SANS WORDPRESS =====
+
+
+# ===== FLUX NOTIFICATIONS EMAIL EMS =====
+@app.get("/api/site/recent-notifications")
+def site_recent_notifications():
+    """Expose seulement les numéros/liens des dernières demandes site, sans données client."""
+    con = legacy.db()
+    try:
+        rows = con.execute(
+            """select id, number, reference, doc_date
+               from docs
+               where kind='Devis'
+                 and internal_note like '%[EMS_SITE_REQUEST:%'
+               order by id desc
+               limit 20"""
+        ).fetchall()
+    finally:
+        con.close()
+
+    base = request.host_url.rstrip("/")
+    items = []
+    for row in rows:
+        items.append({
+            "document_id": row["id"],
+            "number": row["number"],
+            "reference": row["reference"] or "",
+            "date": row["doc_date"] or "",
+            "document_url": f"{base}/document/{row['id']}",
+        })
+    resp = jsonify({"ok": True, "items": items})
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return resp
+# ===== FIN FLUX NOTIFICATIONS EMAIL EMS =====
