@@ -516,6 +516,10 @@ def site_request_api():
         ref = _clean_site_text(item.get("reference"), 120)
         designation = _clean_site_text(item.get("designation"), 1200)
         qty = max(0.01, legacy.parse_decimal(item.get("qty", item.get("quantity", 1)), 1))
+        supplier_name = _clean_site_text(item.get("supplier_name"), 120)
+        supplier_ref = _clean_site_text(item.get("supplier_ref"), 250)
+        if supplier_ref and not supplier_name:
+            supplier_name = "TVH"
         if not ref and not designation:
             continue
         description = ""
@@ -523,7 +527,7 @@ def site_request_api():
             description += f"Réf. MMS : {ref}"
         if designation:
             description += ("\n" if description else "") + designation
-        normalized_items.append((ref, designation, description, qty))
+        normalized_items.append((ref, designation, description, qty, supplier_name, supplier_ref))
 
     if not normalized_items:
         return jsonify({"ok": False, "error": "Aucune pièce exploitable dans la demande."}), 400
@@ -628,10 +632,12 @@ def site_request_api():
         )
         did = cur.lastrowid
 
-        for _ref, _designation, description, qty in normalized_items:
+        for _ref, _designation, description, qty, supplier_name, supplier_ref in normalized_items:
             con.execute(
-                "insert into lines(doc_id,description,qty,unit_price,discount_pct) values(?,?,?,?,?)",
-                (did, description, qty, 0, 0)
+                """insert into lines(
+                   doc_id,description,qty,unit_price,discount_pct,mms_ref,supplier_name,supplier_ref
+                   ) values(?,?,?,?,?,?,?,?)""",
+                (did, description, qty, 0, 0, _ref, supplier_name, supplier_ref)
             )
 
         con.commit()
