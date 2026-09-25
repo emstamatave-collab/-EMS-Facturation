@@ -1,6 +1,7 @@
 
-import os, re, html
+import os, re, html, csv
 from datetime import date
+from pathlib import Path
 from flask import request, redirect, url_for, flash, send_file
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -49,6 +50,24 @@ def _schema():
         row = con.execute("select value from app_settings where key='eur_mga_rate'").fetchone()
         if not row:
             con.execute("insert into app_settings(key,value) values(?,?)", ("eur_mga_rate","0"))
+        map_dir = Path(__file__).parent / "supplier_maps"
+        if map_dir.exists():
+            for csv_path in sorted(map_dir.glob("*.csv")):
+                try:
+                    with csv_path.open("r", encoding="utf-8-sig", newline="") as fh:
+                        for rec in csv.DictReader(fh):
+                            mms=(rec.get("mms_ref") or "").strip().upper()
+                            sname=(rec.get("supplier_name") or "TVH").strip() or "TVH"
+                            sref=(rec.get("supplier_ref") or "").strip()
+                            if not mms:
+                                continue
+                            old=con.execute("select mms_ref from supplier_map where upper(mms_ref)=upper(?)",(mms,)).fetchone()
+                            if old:
+                                con.execute("update supplier_map set supplier_name=?,supplier_ref=? where upper(mms_ref)=upper(?)",(sname,sref,mms))
+                            else:
+                                con.execute("insert into supplier_map(mms_ref,supplier_name,supplier_ref) values(?,?,?)",(mms,sname,sref))
+                except Exception as e:
+                    print(f"EMS supplier map ignored {csv_path.name}: {e}", flush=True)
         con.commit()
     finally:
         con.close()
