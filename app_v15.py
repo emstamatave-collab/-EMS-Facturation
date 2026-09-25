@@ -1,6 +1,7 @@
 # EMS Facturation V15
 # Multi-devise EUR/MGA, marge interne, fournisseurs et informations achat par ligne.
-import html
+import html, csv, re
+from pathlib import Path
 from datetime import date, timedelta
 
 import app_v14 as base
@@ -25,7 +26,9 @@ def _migrate_v15():
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_ref TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS internal_note TEXT DEFAULT ''",
+                "ALTER TABLE lines ADD COLUMN IF NOT EXISTS mms_ref TEXT DEFAULT ''",
                 "CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT DEFAULT '')",
+                "CREATE TABLE IF NOT EXISTS supplier_map(mms_ref TEXT PRIMARY KEY, supplier_name TEXT DEFAULT 'TVH', supplier_ref TEXT DEFAULT '')",
                 "INSERT INTO app_settings(key,value) VALUES('fx_rate_eur_mga','0') ON CONFLICT (key) DO NOTHING",
                 "UPDATE docs SET currency='MGA' WHERE currency IS NULL OR currency=''",
                 "UPDATE docs SET fx_rate=0 WHERE fx_rate IS NULL",
@@ -33,6 +36,22 @@ def _migrate_v15():
             ]
             for sql in statements:
                 con.execute(sql)
+            map_dir = Path(__file__).parent / 'supplier_maps'
+            if map_dir.exists():
+                for csv_path in sorted(map_dir.glob('*.csv')):
+                    try:
+                        with csv_path.open('r', encoding='utf-8-sig', newline='') as fh:
+                            for rec in csv.DictReader(fh):
+                                mms=(rec.get('mms_ref') or '').strip().upper()
+                                sname=(rec.get('supplier_name') or 'TVH').strip() or 'TVH'
+                                sref=(rec.get('supplier_ref') or '').strip()
+                                if mms:
+                                    con.execute("""insert into supplier_map(mms_ref,supplier_name,supplier_ref)
+                                                   values(%s,%s,%s)
+                                                   on conflict(mms_ref) do update set supplier_name=excluded.supplier_name,supplier_ref=excluded.supplier_ref""",
+                                                (mms,sname,sref))
+                    except Exception as e:
+                        print(f"EMS mapping fournisseur ignoré {csv_path.name}: {e}", flush=True)
     else:
         con = legacy.db()
         legacy.ensure_column(con, 'docs', 'currency', "TEXT DEFAULT 'MGA'")
@@ -42,10 +61,28 @@ def _migrate_v15():
         legacy.ensure_column(con, 'lines', 'supplier_ref', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'supplier_name', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'internal_note', "TEXT DEFAULT ''")
+        legacy.ensure_column(con, 'lines', 'mms_ref', "TEXT DEFAULT ''")
         con.execute("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT DEFAULT '')")
+        con.execute("CREATE TABLE IF NOT EXISTS supplier_map(mms_ref TEXT PRIMARY KEY,supplier_name TEXT DEFAULT 'TVH',supplier_ref TEXT DEFAULT '')")
         row = con.execute("SELECT value FROM app_settings WHERE key='fx_rate_eur_mga'").fetchone()
         if not row:
             con.execute("INSERT INTO app_settings(key,value) VALUES(?,?)", ('fx_rate_eur_mga', '0'))
+        map_dir = Path(__file__).parent / 'supplier_maps'
+        if map_dir.exists():
+            for csv_path in sorted(map_dir.glob('*.csv')):
+                try:
+                    with csv_path.open('r', encoding='utf-8-sig', newline='') as fh:
+                        for rec in csv.DictReader(fh):
+                            mms=(rec.get('mms_ref') or '').strip().upper()
+                            sname=(rec.get('supplier_name') or 'TVH').strip() or 'TVH'
+                            sref=(rec.get('supplier_ref') or '').strip()
+                            if mms:
+                                con.execute("""insert into supplier_map(mms_ref,supplier_name,supplier_ref)
+                                               values(?,?,?)
+                                               on conflict(mms_ref) do update set supplier_name=excluded.supplier_name,supplier_ref=excluded.supplier_ref""",
+                                            (mms,sname,sref))
+                except Exception as e:
+                    print(f"EMS mapping fournisseur ignoré {csv_path.name}: {e}", flush=True)
         con.commit()
         con.close()
 
@@ -140,6 +177,65 @@ def _set_setting(key, value):
 
 def _default_fx_rate():
     return max(0, legacy.parse_decimal(_get_setting('fx_rate_eur_mga', '0'), 0))
+
+
+def _supplier_for_mms(mms_ref):
+    ref=str(mms_ref or '').strip().upper()
+    if not ref:
+        return '', ''
+    con=legacy.db()
+    try:
+        row=con.execute('select supplier_name,supplier_ref from supplier_map where upper(mms_ref)=upper(?)',(ref,)).fetchone()
+        if row:
+            return (row['supplier_name'] or 'TVH'), (row['supplier_ref'] or '')
+    finally:
+        con.close()
+    # Les références MMS de nos catalogues proviennent de TVH, mais on ne devine jamais la référence TVH.
+    return ('TVH','') if ref.startswith('MMS-') else ('','')
+
+
+def _extract_mms_ref(description):
+    m=re.search(r'Ref[.é]*\s*MMS\s*:\s*([^\n\r]+)', str(description or ''), re.I)
+    return (m.group(1).strip().upper() if m else '')
+
+
+def _enrich_site_lines():
+    con=legacy.db()
+    try:
+        rows=con.execute("""select l.id,l.description,l.mms_ref,l.supplier_name,l.supplier_ref
+                            from lines l join docs d on d.id=l.doc_id
+                            where d.internal_note like '%[EMS_SITE_REQUEST:%'
+                              and (coalesce(l.mms_ref,'')='' or coalesce(l.supplier_name,'')='' or coalesce(l.supplier_ref,'')='')
+                            order by l.id desc limit 500""").fetchall()
+        for row in rows:
+            mms=(row['mms_ref'] or '').strip().upper() or _extract_mms_ref(row['description'])
+            if not mms:
+                continue
+            sname,sref=_supplier_for_mms(mms)
+            con.execute("""update lines set mms_ref=?,
+                           supplier_name=case when coalesce(supplier_name,'')='' then ? else supplier_name end,
+                           supplier_ref=case when coalesce(supplier_ref,'')='' then ? else supplier_ref end
+                           where id=?""",(mms,sname,sref,row['id']))
+        con.commit()
+    finally:
+        con.close()
+
+
+# Enrichit aussi les demandes déjà créées avant cette version.
+try:
+    _enrich_site_lines()
+except Exception as e:
+    print(f"EMS enrichissement fournisseur initial ignoré: {e}", flush=True)
+
+
+@app.after_request
+def enrich_site_supplier_after_request(response):
+    if request.method=='POST' and request.path in ('/demande-piece','/api/site/part-request') and response.status_code < 400:
+        try:
+            _enrich_site_lines()
+        except Exception as e:
+            print(f"EMS enrichissement fournisseur: {e}", flush=True)
+    return response
 
 
 def _financials(lines):
@@ -263,6 +359,7 @@ def _line_row(line=None):
     unit = float(_row_get(line, 'unit_price', 0) or 0)
     disc = float(_row_get(line, 'discount_pct', 0) or 0)
     purchase = float(_row_get(line, 'purchase_price', 0) or 0)
+    mms_ref = esc(_row_get(line, 'mms_ref', ''))
     supplier_ref = esc(_row_get(line, 'supplier_ref', ''))
     supplier_name = esc(_row_get(line, 'supplier_name', ''))
     internal_note = esc(_row_get(line, 'internal_note', ''))
@@ -276,7 +373,7 @@ def _line_row(line=None):
 <td><input name="discount_pct" type="text" inputmode="decimal" autocomplete="off" value="{disc:g}"></td>
 <td><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
 <td><input class="margin-field readonly" type="text" readonly tabindex="-1"></td>
-<td class="supplier-cell"><input name="supplier_ref" value="{supplier_ref}" placeholder="Réf. fournisseur"><input name="supplier_name" value="{supplier_name}" placeholder="Nom fournisseur"></td>
+<td class="supplier-cell"><input name="mms_ref" value="{mms_ref}" placeholder="Réf. MMS"><input name="supplier_ref" value="{supplier_ref}" placeholder="Réf. TVH"><input name="supplier_name" value="{supplier_name}" placeholder="TVH"></td>
 <td><textarea name="line_internal_note" placeholder="Note interne">{internal_note}</textarea></td>
 </tr>"""
 
@@ -363,6 +460,7 @@ def _save_lines(con, doc_id):
     units = request.form.getlist('unit_price')
     discounts = request.form.getlist('discount_pct')
     purchases = request.form.getlist('purchase_price')
+    mms_refs = request.form.getlist('mms_ref')
     supplier_refs = request.form.getlist('supplier_ref')
     supplier_names = request.form.getlist('supplier_name')
     internal_notes = request.form.getlist('line_internal_note')
@@ -373,16 +471,25 @@ def _save_lines(con, doc_id):
         p = units[i] if i < len(units) else '0'
         disc = discounts[i] if i < len(discounts) else '0'
         purchase = purchases[i] if i < len(purchases) else '0'
+        mms_ref=(mms_refs[i] if i < len(mms_refs) else '').strip().upper()
+        if not mms_ref:
+            mms_ref=_extract_mms_ref(description)
         supplier_ref = supplier_refs[i] if i < len(supplier_refs) else ''
         supplier_name = supplier_names[i] if i < len(supplier_names) else ''
+        if mms_ref and (not supplier_ref or not supplier_name):
+            auto_name,auto_ref=_supplier_for_mms(mms_ref)
+            if not supplier_name:
+                supplier_name=auto_name
+            if not supplier_ref:
+                supplier_ref=auto_ref
         internal_note = internal_notes[i] if i < len(internal_notes) else ''
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?)""",
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,mms_ref,supplier_ref,supplier_name,internal_note)
+               values(?,?,?,?,?,?,?,?,?,?)""",
             (
                 doc_id, description, legacy.parse_decimal(q,1), legacy.parse_decimal(p,0),
                 max(0,min(100,legacy.parse_decimal(disc,0))), max(0,legacy.parse_decimal(purchase,0)),
-                supplier_ref, supplier_name, internal_note
+                mms_ref, supplier_ref, supplier_name, internal_note
             )
         )
 
@@ -395,11 +502,17 @@ def settings_v15():
         flash('Taux de change enregistré. Il restera inchangé jusqu’à ta prochaine modification.')
         return redirect('/settings')
     rate = _default_fx_rate()
+    con=legacy.db()
+    try:
+        map_count=con.execute("select count(*) n from supplier_map where coalesce(supplier_ref,'')<>''").fetchone()['n']
+    finally:
+        con.close()
     return legacy.page(f"""{FINANCE_CSS}<div class="card"><h2>Paramètres EMS</h2>
 <div class="fxbox"><h3 style="margin-top:0">Taux de change permanent</h3>
 <form method="post"><div style="max-width:420px"><label>1 € =</label><div class="row"><input style="flex:1" name="fx_rate" type="text" inputmode="decimal" value="{rate:g}" placeholder="Saisir le taux"><b>Ar</b></div></div>
 <p class="muted">Ce taux n'est jamais mis à jour automatiquement. Les nouveaux devis l'utilisent comme valeur de départ. Chaque devis garde ensuite son propre taux historique.</p>
-<button>Enregistrer le taux</button></form></div></div>""")
+<button>Enregistrer le taux</button></form></div>
+<div class="internalbox"><b>Correspondances fournisseur internes</b><br>{map_count} référence(s) MMS ↔ TVH chargée(s). Ces informations ne sont jamais affichées sur les PDF clients.</div></div>""")
 
 
 def home_v15():
@@ -520,8 +633,9 @@ def document_v15(doc_id):
         buy=qty*purchase
         line_margin=net-buy
         supplier=''.join([
-            f"<b>{esc(l['supplier_name'])}</b>" if l['supplier_name'] else '',
-            f"<br>Réf. {esc(l['supplier_ref'])}" if l['supplier_ref'] else ''
+            f"<b>MMS : {esc(l['mms_ref'])}</b>" if l['mms_ref'] else '',
+            f"<br><b>{esc(l['supplier_name'])}</b>" if l['supplier_name'] else '',
+            f"<br>Réf. TVH : {esc(l['supplier_ref'])}" if l['supplier_ref'] else ''
         ]) or '<span class="muted">—</span>'
         note=esc(l['internal_note']) or '<span class="muted">—</span>'
         conv=_converted(unit,currency,rate)
@@ -598,9 +712,9 @@ def convert_v15(doc_id):
     new_id=cur.lastrowid
     for l in con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall():
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?)""",
-            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['supplier_ref'],l['supplier_name'],l['internal_note'])
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,mms_ref,supplier_ref,supplier_name,internal_note)
+               values(?,?,?,?,?,?,?,?,?,?)""",
+            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['mms_ref'],l['supplier_ref'],l['supplier_name'],l['internal_note'])
         )
     for im in con.execute('select * from doc_images where doc_id=?',(doc_id,)).fetchall():
         con.execute('insert into doc_images(doc_id,original_name,stored_name,mime) values(?,?,?,?)',(new_id,im['original_name'],im['stored_name'],im['mime']))
