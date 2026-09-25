@@ -39,14 +39,19 @@ def _schema():
             LEGACY.ensure_column(con, "lines", "purchase_price", "REAL DEFAULT 0")
             LEGACY.ensure_column(con, "lines", "internal_note", "TEXT DEFAULT ''")
         con.execute("""CREATE TABLE IF NOT EXISTS app_settings(
-            key TEXT PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
+            key TEXT UNIQUE,
             value TEXT
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS supplier_map(
-            mms_ref TEXT PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
+            mms_ref TEXT UNIQUE,
             supplier_name TEXT DEFAULT 'TVH',
             supplier_ref TEXT DEFAULT ''
         )""")
+        if os.environ.get("DATABASE_URL", "").strip():
+            con.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS id BIGSERIAL")
+            con.execute("ALTER TABLE supplier_map ADD COLUMN IF NOT EXISTS id BIGSERIAL")
         row = con.execute("select value from app_settings where key='eur_mga_rate'").fetchone()
         if not row:
             con.execute("insert into app_settings(key,value) values(?,?)", ("eur_mga_rate","0"))
