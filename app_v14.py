@@ -935,3 +935,9 @@ def site_recent_notifications():
     resp.headers["X-Robots-Tag"] = "noindex, nofollow"
     return resp
 # ===== FIN FLUX NOTIFICATIONS EMAIL EMS =====
+
+
+# ===== MODULE COMMERCIAL EMS V15 =====
+import ems_commercial_v15
+ems_commercial_v15.install(app, legacy)
+# ===== FIN MODULE COMMERCIAL EMS V15 =====
