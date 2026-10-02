@@ -23,6 +23,7 @@ def _migrate_v15():
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS fx_rate DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS show_conversion INTEGER DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS purchase_price DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE lines ADD COLUMN IF NOT EXISTS tvh_purchase_eur DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_ref TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS internal_note TEXT DEFAULT ''",
@@ -58,6 +59,7 @@ def _migrate_v15():
         legacy.ensure_column(con, 'docs', 'fx_rate', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'docs', 'show_conversion', "INTEGER DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'purchase_price', "REAL DEFAULT 0")
+        legacy.ensure_column(con, 'lines', 'tvh_purchase_eur', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'supplier_ref', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'supplier_name', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'internal_note', "TEXT DEFAULT ''")
