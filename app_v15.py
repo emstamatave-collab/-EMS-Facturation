@@ -311,6 +311,18 @@ FORM_SCRIPT = """
    if(c==='EUR') return v.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';
    return Math.round(v).toLocaleString('fr-FR')+' Ar';
  }
+ function suggestTVH(row) {
+ const v=row.querySelector('[name="tvh_purchase_eur"]'), sale=row.querySelector('[name="unit_price"]'), cost=row.querySelector('[name="purchase_price"]');
+ if(!v||!sale||!cost||!v.value.trim())return;
+ const supplier=row.querySelector('[name="supplier_name"]');
+ if(supplier&&supplier.value.trim()&&supplier.value.trim().toUpperCase()!=='TVH')return;
+ const euros=n(v.value),fx=n(rate.value);
+ if(euros<0||(cur.value!=='EUR'&&fx<=0))return;
+ const k=euros<=50?3.5:euros<=100?3:euros<=150?2.5:euros<=350?2:1.5;
+ const factor=cur.value==='EUR'?1:fx;
+ cost.value=(Math.round(euros*factor*100)/100).toString();
+ sale.value=(Math.round(euros*k*factor*100)/100).toString();
+ }
  function refresh(){
    const c=cur.value==='EUR'?'EUR':'MGA';
    const r=n(rate.value);
@@ -345,7 +357,9 @@ FORM_SCRIPT = """
    document.querySelectorAll('.conv-label').forEach(function(el){el.textContent='Équiv. '+(alt==='EUR'?'€':'Ar');});
  }
  document.addEventListener('input',function(e){
-   if(e.target.closest('.finance-line') || e.target===rate) refresh();
+   const row=e.target.closest('.finance-line');
+   if(row&&e.target.name==='tvh_purchase_eur')suggestTVH(row);
+   if(row||e.target===rate)refresh();
  });
  cur.addEventListener('change',refresh);
  refresh();
@@ -372,7 +386,7 @@ def _line_row(line=None):
 <td><input class="linefield pricefield" name="unit_price" type="text" inputmode="decimal" autocomplete="off" value="{unit_value}" placeholder="Prix de vente"></td>
 <td><input class="conversion-field readonly" type="text" readonly tabindex="-1"></td>
 <td><input name="discount_pct" type="text" inputmode="decimal" autocomplete="off" value="{disc:g}"></td>
-<td><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
+<td><input name="tvh_purchase_eur" type="text" inputmode="decimal" placeholder="Achat TVH €" aria-label="Achat TVH euros"><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
 <td><input class="margin-field readonly" type="text" readonly tabindex="-1"></td>
 <td class="supplier-cell"><input name="mms_ref" value="{mms_ref}" placeholder="Réf. MMS"><input name="supplier_ref" value="{supplier_ref}" placeholder="Réf. TVH"><input name="supplier_name" value="{supplier_name}" placeholder="TVH"></td>
 <td><textarea name="line_internal_note" placeholder="Note interne">{internal_note}</textarea></td>
