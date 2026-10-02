@@ -460,7 +460,27 @@ def signature(doc_id):
 def set_status(doc_id):
     status=request.form.get('status'); allowed=['Brouillon','Envoyé','Accepté','Commandé','Livré','Facturé','Partiellement payé','Payé','Refusé','Annulé']
     if status in allowed:
-        con=db(); con.execute('update docs set status=? where id=?',(status,doc_id)); con.commit(); con.close(); flash('Statut mis à jour.')
+        con=db()
+        doc=con.execute('select kind from docs where id=?',(doc_id,)).fetchone()
+        if doc and doc['kind']=='Facture' and status=='Payé':
+            total=total_for(con,doc_id)
+            already=float(paid_for(con,doc_id) or 0)
+            balance=round(total-already,2)
+            if balance>0.005:
+                con.execute('insert into payments(doc_id,payment_date,amount,method,note) values(?,?,?,?,?)',
+                            (doc_id,date.today().isoformat(),balance,'Non précisé','Solde enregistré lors du passage au statut Payé'))
+            elif total<=0:
+                con.close()
+                flash('Facture sans montant positif : aucun règlement créé.')
+                return redirect(url_for('document',doc_id=doc_id))
+        elif doc and doc['kind']=='Facture' and status=='Partiellement payé':
+            paid=float(paid_for(con,doc_id) or 0)
+            if paid<=0:
+                con.close()
+                flash('Enregistre d’abord le montant du règlement partiel.')
+                return redirect(url_for('document',doc_id=doc_id))
+        con.execute('update docs set status=? where id=?',(status,doc_id))
+        con.commit(); con.close(); flash('Statut mis à jour.')
     return redirect(url_for('document',doc_id=doc_id))
 
 def draw_wrapped(c,text,x,y,maxw,font='Helvetica',size=9,leading=4.3*mm,max_lines=3):
