@@ -1,7 +1,7 @@
 name: EMS TVH isolated tests
 on:
   push:
-    branches: [fix/tvh-v15-safe]
+    branches: [fix/tvh-v15-safe, fix/dashboard-paid-status]
   workflow_dispatch:
 jobs:
   check:
@@ -17,5 +17,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run isolated SQLite quote and invoice smoke test
         run: python -m unittest -v test_tvh_runtime_smoke.py
+      - name: Test paid invoice homepage totals
+        run: python -m unittest -v test_dashboard_paid.py
       - name: Run isolated TVH regression tests
         run: python -m unittest -v test_tvh_v15_integration.py
