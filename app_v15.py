@@ -315,10 +315,17 @@ FORM_SCRIPT = """
  function suggestTVH(row) {
  const v=row.querySelector('[name="tvh_purchase_eur"]'), sale=row.querySelector('[name="unit_price"]'), cost=row.querySelector('[name="purchase_price"]');
  if(!v||!sale||!cost||!v.value.trim())return;
- const supplier=row.querySelector('[name="supplier_name"]');
- if(supplier&&supplier.value.trim()&&supplier.value.trim().toUpperCase()!=='TVH')return;
+ // The explicit TVH purchase field is authoritative even when an existing
+ // supplier label has not yet been changed to TVH.
  const euros=n(v.value),fx=n(rate.value);
- if(euros<0||(cur.value!=='EUR'&&fx<=0))return;
+ if(euros<0)return;
+ if(cur.value!=='EUR'&&fx<=0){
+   sale.setCustomValidity('Renseigner le taux EUR / Ar pour calculer le prix de vente TVH.');
+   sale.title='Renseigner le taux EUR / Ar pour calculer le prix de vente TVH.';
+   return;
+ }
+ sale.setCustomValidity('');
+ sale.title='';
  const k=euros<=50?3.5:euros<=100?3:euros<=150?2.5:euros<=350?2:1.5;
  const factor=cur.value==='EUR'?1:fx;
  cost.value=(Math.round(euros*factor*100)/100).toString();
@@ -360,9 +367,10 @@ FORM_SCRIPT = """
  document.addEventListener('input',function(e){
    const row=e.target.closest('.finance-line');
    if(row&&e.target.name==='tvh_purchase_eur')suggestTVH(row);
+   if(e.target===rate)document.querySelectorAll('.finance-line').forEach(suggestTVH);
    if(row||e.target===rate)refresh();
  });
- cur.addEventListener('change',refresh);
+ cur.addEventListener('change',function(){document.querySelectorAll('.finance-line').forEach(suggestTVH);refresh();});
  refresh();
 })();
 </script>
