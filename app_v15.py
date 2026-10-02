@@ -371,7 +371,7 @@ def _line_row(line=None):
 <td><input class="linefield pricefield" name="unit_price" type="text" inputmode="decimal" autocomplete="off" value="{unit_value}" placeholder="Prix de vente"></td>
 <td><input class="conversion-field readonly" type="text" readonly tabindex="-1"></td>
 <td><input name="discount_pct" type="text" inputmode="decimal" autocomplete="off" value="{disc:g}"></td>
-<td><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
+<td><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Achat TVH (€) — si fournisseur TVH"></td>
 <td><input class="margin-field readonly" type="text" readonly tabindex="-1"></td>
 <td class="supplier-cell"><input name="mms_ref" value="{mms_ref}" placeholder="Réf. MMS"><input name="supplier_ref" value="{supplier_ref}" placeholder="Réf. TVH"><input name="supplier_name" value="{supplier_name}" placeholder="TVH"></td>
 <td><textarea name="line_internal_note" placeholder="Note interne">{internal_note}</textarea></td>
