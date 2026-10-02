@@ -246,6 +246,7 @@ def _financials(lines):
         sale = float(_row_get(line, 'unit_price', 0) or 0)
         disc = float(_row_get(line, 'discount_pct', 0) or 0)
         purchase = float(_row_get(line, 'purchase_price', 0) or 0)
+    tvh_eur = float(_row_get(line, 'tvh_purchase_eur', 0) or 0)
         sales += qty * sale * (1 - disc / 100.0)
         purchases += qty * purchase
     margin = sales - purchases
