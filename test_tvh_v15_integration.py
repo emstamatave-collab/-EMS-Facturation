@@ -18,6 +18,17 @@ class TVHIntegrationContract(unittest.TestCase):
         self.assertIn("sale.value=", SOURCE)
         self.assertIn("cost.value=", SOURCE)
 
+    def test_tvh_saved_and_reopened(self):
+        self.assertIn("tvh_purchases = request.form.getlist('tvh_purchase_eur')", SOURCE)
+        self.assertIn("max(0,legacy.parse_decimal(tvh_purchase,0))", SOURCE)
+        self.assertIn("tvh_eur = float(_row_get(line, 'tvh_purchase_eur', 0) or 0)", SOURCE)
+        self.assertIn('value="{tvh_value}"', SOURCE)
+        self.assertIn("l['tvh_purchase_eur'],l['mms_ref']", SOURCE)
+
+    def test_migration_keeps_existing_documents(self):
+        self.assertIn("ALTER TABLE lines ADD COLUMN IF NOT EXISTS tvh_purchase_eur", SOURCE)
+        self.assertIn("legacy.ensure_column(con, 'lines', 'tvh_purchase_eur'", SOURCE)
+
     def test_eur_and_mga_boundaries(self):
         for price, expected in [(50,175),(50.01,Decimal("150.03")),(100,300),(150,375),(350,700),(400,600)]:
             self.assertEqual(proposition_tvh(price), Decimal(str(expected)).quantize(Decimal("0.01")))
