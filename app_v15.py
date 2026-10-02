@@ -541,14 +541,14 @@ def home_v15():
     devis = con.execute("select count(*) n from docs where kind='Devis'").fetchone()['n']
     fact = con.execute("select count(*) n from docs where kind='Facture'").fetchone()['n']
     invoice_rows = con.execute(
-        """select d.id,d.currency,d.fx_rate,
+        """select d.id,d.currency,d.fx_rate,d.status,
            coalesce(sum(l.qty*l.unit_price*(1-coalesce(l.discount_pct,0)/100.0)),0) total,
            (select coalesce(sum(amount),0) from payments p where p.doc_id=d.id) paid
            from docs d left join lines l on l.doc_id=d.id
            where d.kind='Facture' group by d.id,d.currency,d.fx_rate"""
     ).fetchall()
     billed_mga = sum(_to_mga(r['total'], r['currency'], r['fx_rate']) for r in invoice_rows)
-    paid_mga = sum(_to_mga(r['paid'], r['currency'], r['fx_rate']) for r in invoice_rows)
+    paid_mga = sum(_to_mga(max(float(r['paid']), float(r['total'])) if r['status'] == 'Payé' else r['paid'], r['currency'], r['fx_rate']) for r in invoice_rows)
     recent = con.execute(
         """select d.*,c.name client,coalesce(sum(l.qty*l.unit_price*(1-coalesce(l.discount_pct,0)/100.0)),0) total
            from docs d left join clients c on c.id=d.client_id left join lines l on l.doc_id=d.id
