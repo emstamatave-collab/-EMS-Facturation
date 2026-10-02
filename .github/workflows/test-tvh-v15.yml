@@ -1,7 +1,7 @@
 name: EMS TVH isolated tests
 on:
   push:
-    branches: [fix/tvh-v15-safe, fix/dashboard-paid-status]
+    branches: [fix/tvh-v15-safe, fix/dashboard-paid-status, fix/tvh-live-input]
   workflow_dispatch:
 jobs:
   check:
