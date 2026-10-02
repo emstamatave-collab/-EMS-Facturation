@@ -75,9 +75,9 @@ def restore_from_supabase():
 
         new_uploads = extract_dir / "uploads"
         if new_uploads.exists():
-            if UPLOAD_DIR.exists():
-                shutil.rmtree(UPLOAD_DIR)
-            shutil.copytree(new_uploads, UPLOAD_DIR)
+            # Keep any existing attachments if the archive is incomplete.
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(new_uploads, UPLOAD_DIR, dirs_exist_ok=True)
 
         print("EMS restaure depuis Supabase")
 
