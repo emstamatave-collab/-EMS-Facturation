@@ -23,6 +23,7 @@ def _migrate_v15():
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS fx_rate DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS show_conversion INTEGER DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS purchase_price DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE lines ADD COLUMN IF NOT EXISTS tvh_purchase_eur DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_ref TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS internal_note TEXT DEFAULT ''",
@@ -58,6 +59,7 @@ def _migrate_v15():
         legacy.ensure_column(con, 'docs', 'fx_rate', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'docs', 'show_conversion', "INTEGER DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'purchase_price', "REAL DEFAULT 0")
+        legacy.ensure_column(con, 'lines', 'tvh_purchase_eur', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'supplier_ref', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'supplier_name', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'internal_note', "TEXT DEFAULT ''")
@@ -310,6 +312,18 @@ FORM_SCRIPT = """
    if(c==='EUR') return v.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';
    return Math.round(v).toLocaleString('fr-FR')+' Ar';
  }
+ function suggestTVH(row) {
+ const v=row.querySelector('[name="tvh_purchase_eur"]'), sale=row.querySelector('[name="unit_price"]'), cost=row.querySelector('[name="purchase_price"]');
+ if(!v||!sale||!cost||!v.value.trim())return;
+ const supplier=row.querySelector('[name="supplier_name"]');
+ if(supplier&&supplier.value.trim()&&supplier.value.trim().toUpperCase()!=='TVH')return;
+ const euros=n(v.value),fx=n(rate.value);
+ if(euros<0||(cur.value!=='EUR'&&fx<=0))return;
+ const k=euros<=50?3.5:euros<=100?3:euros<=150?2.5:euros<=350?2:1.5;
+ const factor=cur.value==='EUR'?1:fx;
+ cost.value=(Math.round(euros*factor*100)/100).toString();
+ sale.value=(Math.round(euros*k*factor*100)/100).toString();
+ }
  function refresh(){
    const c=cur.value==='EUR'?'EUR':'MGA';
    const r=n(rate.value);
@@ -344,7 +358,9 @@ FORM_SCRIPT = """
    document.querySelectorAll('.conv-label').forEach(function(el){el.textContent='Équiv. '+(alt==='EUR'?'€':'Ar');});
  }
  document.addEventListener('input',function(e){
-   if(e.target.closest('.finance-line') || e.target===rate) refresh();
+   const row=e.target.closest('.finance-line');
+   if(row&&e.target.name==='tvh_purchase_eur')suggestTVH(row);
+   if(row||e.target===rate)refresh();
  });
  cur.addEventListener('change',refresh);
  refresh();
@@ -359,19 +375,21 @@ def _line_row(line=None):
     unit = float(_row_get(line, 'unit_price', 0) or 0)
     disc = float(_row_get(line, 'discount_pct', 0) or 0)
     purchase = float(_row_get(line, 'purchase_price', 0) or 0)
+    tvh_eur = float(_row_get(line, 'tvh_purchase_eur', 0) or 0)
     mms_ref = esc(_row_get(line, 'mms_ref', ''))
     supplier_ref = esc(_row_get(line, 'supplier_ref', ''))
     supplier_name = esc(_row_get(line, 'supplier_name', ''))
     internal_note = esc(_row_get(line, 'internal_note', ''))
     unit_value = '' if not desc and unit == 0 else f"{unit:g}"
     purchase_value = '' if not desc and purchase == 0 else f"{purchase:g}"
+    tvh_value = '' if tvh_eur == 0 else f"{tvh_eur:g}"
     return f"""<tr class="finance-line">
 <td><textarea name="description" style="min-width:260px" placeholder="Désignation client">{desc}</textarea></td>
 <td><input class="linefield qtyfield" name="qty" type="text" inputmode="decimal" autocomplete="off" value="{qty:g}"></td>
 <td><input class="linefield pricefield" name="unit_price" type="text" inputmode="decimal" autocomplete="off" value="{unit_value}" placeholder="Prix de vente"></td>
 <td><input class="conversion-field readonly" type="text" readonly tabindex="-1"></td>
 <td><input name="discount_pct" type="text" inputmode="decimal" autocomplete="off" value="{disc:g}"></td>
-<td><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
+<td><input name="tvh_purchase_eur" type="text" inputmode="decimal" placeholder="Achat TVH €" aria-label="Achat TVH euros" value="{tvh_value}"><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
 <td><input class="margin-field readonly" type="text" readonly tabindex="-1"></td>
 <td class="supplier-cell"><input name="mms_ref" value="{mms_ref}" placeholder="Réf. MMS"><input name="supplier_ref" value="{supplier_ref}" placeholder="Réf. TVH"><input name="supplier_name" value="{supplier_name}" placeholder="TVH"></td>
 <td><textarea name="line_internal_note" placeholder="Note interne">{internal_note}</textarea></td>
@@ -460,6 +478,7 @@ def _save_lines(con, doc_id):
     units = request.form.getlist('unit_price')
     discounts = request.form.getlist('discount_pct')
     purchases = request.form.getlist('purchase_price')
+    tvh_purchases = request.form.getlist('tvh_purchase_eur')
     mms_refs = request.form.getlist('mms_ref')
     supplier_refs = request.form.getlist('supplier_ref')
     supplier_names = request.form.getlist('supplier_name')
@@ -471,6 +490,7 @@ def _save_lines(con, doc_id):
         p = units[i] if i < len(units) else '0'
         disc = discounts[i] if i < len(discounts) else '0'
         purchase = purchases[i] if i < len(purchases) else '0'
+        tvh_purchase = tvh_purchases[i] if i < len(tvh_purchases) else '0'
         mms_ref=(mms_refs[i] if i < len(mms_refs) else '').strip().upper()
         if not mms_ref:
             mms_ref=_extract_mms_ref(description)
@@ -484,11 +504,11 @@ def _save_lines(con, doc_id):
                 supplier_ref=auto_ref
         internal_note = internal_notes[i] if i < len(internal_notes) else ''
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,mms_ref,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?,?)""",
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note)
+               values(?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 doc_id, description, legacy.parse_decimal(q,1), legacy.parse_decimal(p,0),
-                max(0,min(100,legacy.parse_decimal(disc,0))), max(0,legacy.parse_decimal(purchase,0)),
+                max(0,min(100,legacy.parse_decimal(disc,0))), max(0,legacy.parse_decimal(purchase,0)), max(0,legacy.parse_decimal(tvh_purchase,0)),
                 mms_ref, supplier_ref, supplier_name, internal_note
             )
         )
@@ -712,9 +732,9 @@ def convert_v15(doc_id):
     new_id=cur.lastrowid
     for l in con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall():
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,mms_ref,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?,?)""",
-            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['mms_ref'],l['supplier_ref'],l['supplier_name'],l['internal_note'])
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note)
+               values(?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['tvh_purchase_eur'],l['mms_ref'],l['supplier_ref'],l['supplier_name'],l['internal_note'])
         )
     for im in con.execute('select * from doc_images where doc_id=?',(doc_id,)).fetchall():
         con.execute('insert into doc_images(doc_id,original_name,stored_name,mime) values(?,?,?,?)',(new_id,im['original_name'],im['stored_name'],im['mime']))

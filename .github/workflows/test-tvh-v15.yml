@@ -1,0 +1,21 @@
+name: EMS TVH isolated tests
+on:
+  push:
+    branches: [fix/tvh-v15-safe]
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile application and pricing files
+        run: python -m py_compile app_v13.py app_v14.py app_v15.py tarification_tvh_devis.py
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+      - name: Run isolated SQLite quote and invoice smoke test
+        run: python -m unittest -v test_tvh_runtime_smoke.py
+      - name: Run isolated TVH regression tests
+        run: python -m unittest -v test_tvh_v15_integration.py
