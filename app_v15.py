@@ -22,6 +22,7 @@ def _migrate_v15():
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'MGA'",
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS fx_rate DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS show_conversion INTEGER DEFAULT 0",
+                "ALTER TABLE docs ADD COLUMN IF NOT EXISTS vat_percent DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS purchase_price DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS tvh_purchase_eur DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_ref TEXT DEFAULT ''",
@@ -34,6 +35,7 @@ def _migrate_v15():
                 "UPDATE docs SET currency='MGA' WHERE currency IS NULL OR currency=''",
                 "UPDATE docs SET fx_rate=0 WHERE fx_rate IS NULL",
                 "UPDATE docs SET show_conversion=0 WHERE show_conversion IS NULL",
+                "UPDATE docs SET vat_percent=0 WHERE vat_percent IS NULL",
             ]
             for sql in statements:
                 con.execute(sql)
@@ -58,6 +60,7 @@ def _migrate_v15():
         legacy.ensure_column(con, 'docs', 'currency', "TEXT DEFAULT 'MGA'")
         legacy.ensure_column(con, 'docs', 'fx_rate', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'docs', 'show_conversion', "INTEGER DEFAULT 0")
+        legacy.ensure_column(con, 'docs', 'vat_percent', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'purchase_price', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'tvh_purchase_eur', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'supplier_ref', "TEXT DEFAULT ''")
@@ -256,6 +259,27 @@ def _financials(lines):
     return sales, purchases, margin, margin_rate, mark_rate
 
 
+def _doc_totals(con, doc_id):
+    row = con.execute("""select coalesce(d.vat_percent,0) vat_percent,
+                        coalesce(sum(l.qty*l.unit_price*(1-coalesce(l.discount_pct,0)/100.0)),0) ht
+                        from docs d left join lines l on l.doc_id=d.id
+                        where d.id=? group by d.id,d.vat_percent""",(doc_id,)).fetchone()
+    if not row:
+        return {'ht':0.0,'vat_percent':0.0,'vat':0.0,'ttc':0.0}
+    ht=float(row['ht'] or 0)
+    vat_percent=max(0.0,float(row['vat_percent'] or 0))
+    vat=ht*vat_percent/100.0
+    return {'ht':ht,'vat_percent':vat_percent,'vat':vat,'ttc':ht+vat}
+
+
+def _total_for_with_vat(con, doc_id):
+    return _doc_totals(con,doc_id)['ttc']
+
+
+# Les routes héritées (paiements, statuts, etc.) utilisent désormais le TTC.
+legacy.total_for = _total_for_with_vat
+
+
 def _amount_words(value, currency):
     if _currency(currency) == 'MGA':
         return legacy.number_words(value)
@@ -442,6 +466,8 @@ def _document_form(d, clients, lines, is_new):
 <div><label>Numéro</label><input name="number" value="{number_value}"{number_placeholder}></div>
 {status_field}
 <div><label>Client</label><select name="client_id"><option value="">-- Choisir --</option>{opts}</select></div>
+<div><label>Devise</label><select name="currency"><option value="MGA" {'selected' if currency=='MGA' else ''}>Ariary (Ar)</option><option value="EUR" {'selected' if currency=='EUR' else ''}>Euro (€)</option></select></div>
+<div><label>TVA (%)</label><input name="vat_percent" type="text" inputmode="decimal" value="{float(dg('vat_percent',0) or 0):g}" placeholder="Ex. 20"></div>
 <div><label>Date</label><input type="date" name="doc_date" value="{esc(doc_date)}"></div>
 <div><label>Échéance</label><input type="date" name="due_date" value="{esc(due_date)}"></div>
 <div><label>Bon de commande</label><input name="po_number" value="{esc(dg('po_number',''))}"></div>
@@ -452,7 +478,6 @@ def _document_form(d, clients, lines, is_new):
 <div class="fxbox">
 <h3 style="margin-top:0">Devise et conversion</h3>
 <div class="grid3">
-<div><label>Devise du document</label><select name="currency"><option value="MGA" {'selected' if currency=='MGA' else ''}>Ariary (Ar)</option><option value="EUR" {'selected' if currency=='EUR' else ''}>Euro (€)</option></select></div>
 <div><label>Taux utilisé</label><input name="fx_rate" type="text" inputmode="decimal" value="{fx_rate:g}" placeholder="Ex. 5000"><span class="small muted">1 € = ce montant en Ar. Ce taux reste figé dans ce document.</span></div>
 <div><label>Conversion totale interne</label><input id="sum-converted" class="readonly" readonly tabindex="-1"></div>
 </div>
@@ -549,14 +574,19 @@ def home_v15():
     devis = con.execute("select count(*) n from docs where kind='Devis'").fetchone()['n']
     fact = con.execute("select count(*) n from docs where kind='Facture'").fetchone()['n']
     invoice_rows = con.execute(
-        """select d.id,d.currency,d.fx_rate,d.status,
+        """select d.id,d.currency,d.fx_rate,d.status,d.vat_percent,
            coalesce(sum(l.qty*l.unit_price*(1-coalesce(l.discount_pct,0)/100.0)),0) total,
            (select coalesce(sum(amount),0) from payments p where p.doc_id=d.id) paid
            from docs d left join lines l on l.doc_id=d.id
            where d.kind='Facture' group by d.id,d.currency,d.fx_rate"""
     ).fetchall()
-    billed_mga = sum(_to_mga(r['total'], r['currency'], r['fx_rate']) for r in invoice_rows)
-    paid_mga = sum(_to_mga(max(float(r['paid']), float(r['total'])) if r['status'] == 'Payé' else r['paid'], r['currency'], r['fx_rate']) for r in invoice_rows)
+    billed_mga = 0.0
+    paid_mga = 0.0
+    for r in invoice_rows:
+        ttc=float(r['total'] or 0)*(1+max(0,float(r['vat_percent'] or 0))/100.0)
+        billed_mga += _to_mga(ttc, r['currency'], r['fx_rate'])
+        paid_value=max(float(r['paid'] or 0),ttc) if r['status']=='Payé' else float(r['paid'] or 0)
+        paid_mga += _to_mga(paid_value, r['currency'], r['fx_rate'])
     recent = con.execute(
         """select d.*,c.name client,coalesce(sum(l.qty*l.unit_price*(1-coalesce(l.discount_pct,0)/100.0)),0) total
            from docs d left join clients c on c.id=d.client_id left join lines l on l.doc_id=d.id
@@ -564,7 +594,7 @@ def home_v15():
     ).fetchall()
     con.close()
     trs = ''.join(
-        f"<tr><td>{esc(r['kind'])}</td><td><a href='/document/{r['id']}'>{esc(r['number'])}</a></td><td>{esc(r['client'])}</td><td class='right'>{_money(r['total'],r['currency'])}</td><td><span class='badge'>{esc(r['status'])}</span></td></tr>"
+        f"<tr><td>{esc(r['kind'])}</td><td><a href='/document/{r['id']}'>{esc(r['number'])}</a></td><td>{esc(r['client'])}</td><td class='right'>{_money(float(r['total'] or 0)*(1+max(0,float(r['vat_percent'] or 0))/100.0),r['currency'])}</td><td><span class='badge'>{esc(r['status'])}</span></td></tr>"
         for r in recent
     )
     return legacy.page(f"""<div class="grid4"><div class="card"><div class="muted">Clients</div><div class="kpi">{clients}</div></div><div class="card"><div class="muted">Devis</div><div class="kpi">{devis}</div></div><div class="card"><div class="muted">Factures</div><div class="kpi">{fact}</div></div><div class="card"><div class="muted">Reste à encaisser — équiv. Ar</div><div class="kpi">{legacy.money(max(0,billed_mga-paid_mga))} Ar</div></div></div>
@@ -592,7 +622,7 @@ def documents_v15():
     rows=con.execute(sql,params).fetchall()
     con.close()
     trs=''.join(
-        f"<tr><td>{esc(r['kind'])}</td><td><a href='/document/{r['id']}'>{esc(r['number'])}</a></td><td>{esc(r['client'])}</td><td>{esc(r['doc_date'])}</td><td class='right'>{_money(r['total'],r['currency'])}</td><td class='right'>{_money(max(0,float(r['total'])-float(r['paid'])),r['currency'])}</td><td><span class='badge'>{esc(r['status'])}</span></td></tr>"
+        f"<tr><td>{esc(r['kind'])}</td><td><a href='/document/{r['id']}'>{esc(r['number'])}</a></td><td>{esc(r['client'])}</td><td>{esc(r['doc_date'])}</td><td class='right'>{_money(float(r['total'] or 0)*(1+max(0,float(r['vat_percent'] or 0))/100.0),r['currency'])}</td><td class='right'>{_money(max(0,float(r['total'] or 0)*(1+max(0,float(r['vat_percent'] or 0))/100.0)-float(r['paid'] or 0)),r['currency'])}</td><td><span class='badge'>{esc(r['status'])}</span></td></tr>"
         for r in rows
     )
     status_opts=''.join(f'<option {"selected" if status==s else ""}>{s}</option>' for s in ['Brouillon','Envoyé','Accepté','Refusé','Facturé','Partiellement payé','Payé','Annulé'])
@@ -610,12 +640,13 @@ def new_document_v15():
         currency=_currency(request.form.get('currency'))
         rate=max(0,legacy.parse_decimal(request.form.get('fx_rate'),_default_fx_rate()))
         show=1 if request.form.get('show_conversion') else 0
+        vat_percent=max(0,min(100,legacy.parse_decimal(request.form.get('vat_percent'),0)))
         cur=con.execute(
-            """insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,internal_note,currency,fx_rate,show_conversion)
-               values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,internal_note,currency,fx_rate,show_conversion,vat_percent)
+               values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (kind,number,request.form.get('doc_date'),request.form.get('due_date'),request.form.get('client_id') or None,
              request.form.get('reference'),request.form.get('po_number'),request.form.get('payment_terms'),request.form.get('delivery'),
-             'Brouillon',request.form.get('notes'),request.form.get('internal_note'),currency,rate,show)
+             'Brouillon',request.form.get('notes'),request.form.get('internal_note'),currency,rate,show,vat_percent)
         )
         did=cur.lastrowid
         _save_lines(con,did)
@@ -630,7 +661,7 @@ def new_document_v15():
         'kind':'Devis','number':'','status':'Brouillon','client_id':'','doc_date':date.today().isoformat(),
         'due_date':(date.today()+timedelta(days=30)).isoformat(),'po_number':'','reference':'',
         'payment_terms':'Virement sous 30 jours','delivery':'','notes':'','internal_note':'',
-        'currency':'MGA','fx_rate':_default_fx_rate(),'show_conversion':0
+        'currency':'MGA','fx_rate':_default_fx_rate(),'show_conversion':0,'vat_percent':0
     }
     return legacy.page(_document_form(seed,clients,[],True))
 
@@ -644,7 +675,8 @@ def document_v15(doc_id):
     pays=con.execute('select * from payments where doc_id=? order by payment_date desc,id desc',(doc_id,)).fetchall()
     if not d:
         con.close(); return 'Document introuvable',404
-    total=legacy.total_for(con,doc_id)
+    totals=_doc_totals(con,doc_id)
+    total=totals['ttc']; ht=totals['ht']; vat_percent=totals['vat_percent']; vat_amount=totals['vat']
     paid=legacy.paid_for(con,doc_id)
     con.close()
     currency=_currency(d['currency'])
@@ -675,7 +707,8 @@ def document_v15(doc_id):
     payform=f"""<div class="card"><h3>Enregistrer un règlement</h3><form method="post" action="/document/{doc_id}/payment"><div class="grid3"><div><label>Date</label><input type="date" name="payment_date" value="{date.today().isoformat()}"></div><div><label>Montant ({_symbol(currency)})</label><input type="text" inputmode="decimal" autocomplete="off" name="amount" value="{balance:g}" placeholder="Montant"></div><div><label>Mode</label><select name="method"><option>Virement</option><option>Espèces</option><option>Chèque</option><option>Mobile Money</option><option>Autre</option></select></div></div><p><label>Note</label><input name="note"></p><button class="success">Ajouter le règlement</button></form></div>""" if d['kind']=='Facture' else ''
     alt_block=_money(alt_total,alt_currency) if alt_total is not None else 'Taux à renseigner'
     return legacy.page(f"""{FINANCE_CSS}<div class="card"><div class="row"><div style="flex:1"><h2>{esc(d['kind'])} {esc(d['number'])}</h2><div class="muted">{esc(d['client'] or 'Sans client')} • {esc(d['doc_date'])}</div></div><a class="btn2" href="/document/{doc_id}/edit">Modifier</a><a class="btn2" href="/document/{doc_id}/pdf">Télécharger PDF</a>{conv_form}</div><hr>
-<div class="grid3"><div><div class="muted">Total vente</div><div class="total">{_money(total,currency)}</div></div><div><div class="muted">Conversion interne</div><div class="total">{alt_block}</div></div><div><div class="muted">Solde</div><div class="total">{_money(balance,currency)}</div></div></div>
+<div class="grid3"><div><div class="muted">Total HT</div><div class="total">{_money(ht,currency)}</div></div><div><div class="muted">TVA {vat_percent:g} %</div><div class="total">{_money(vat_amount,currency)}</div></div><div><div class="muted">Total TTC</div><div class="total">{_money(total,currency)}</div></div></div>
+<div class="grid3" style="margin-top:10px"><div><div class="muted">Conversion interne TTC</div><div class="total">{alt_block}</div></div><div><div class="muted">Encaissé</div><div class="total">{_money(paid,currency)}</div></div><div><div class="muted">Solde</div><div class="total">{_money(balance,currency)}</div></div></div>
 <div class="finance-summary"><div><div class="muted">Total achat HT</div><div class="v">{_money(purchases,currency)}</div></div><div><div class="muted">Marge brute</div><div class="v">{_money(margin,currency)}</div></div><div><div class="muted">Taux de marge</div><div class="v">{margin_rate:.1f} %</div></div><div><div class="muted">Taux de marque</div><div class="v">{mark_rate:.1f} %</div></div><div><div class="muted">Taux change</div><div class="v">1 € = {_number(rate,'MGA')} Ar</div></div></div>
 <p><b>Statut :</b> <span class="badge">{esc(d['status'])}</span> &nbsp; <b>Référence :</b> {esc(d['reference'])} &nbsp; <b>Conversion sur PDF client :</b> {'Oui' if int(d['show_conversion'] or 0) else 'Non'}</p>
 <h3>Client</h3><div>{esc(d['client'])}<br>{esc(d['address']).replace(chr(10),'<br>')}<br>NIF : {esc(d['nif'])}<br>STAT : {esc(d['stat'])}</div>
@@ -698,12 +731,13 @@ def edit_document_v15(doc_id):
         currency=_currency(request.form.get('currency'))
         rate=max(0,legacy.parse_decimal(request.form.get('fx_rate'),_default_fx_rate()))
         show=1 if request.form.get('show_conversion') else 0
+        vat_percent=max(0,min(100,legacy.parse_decimal(request.form.get('vat_percent'),0)))
         con.execute(
-            """update docs set kind=?,number=?,doc_date=?,due_date=?,client_id=?,reference=?,po_number=?,payment_terms=?,delivery=?,status=?,notes=?,internal_note=?,currency=?,fx_rate=?,show_conversion=? where id=?""",
+            """update docs set kind=?,number=?,doc_date=?,due_date=?,client_id=?,reference=?,po_number=?,payment_terms=?,delivery=?,status=?,notes=?,internal_note=?,currency=?,fx_rate=?,show_conversion=?,vat_percent=? where id=?""",
             (request.form.get('kind'),request.form.get('number'),request.form.get('doc_date'),request.form.get('due_date'),
              request.form.get('client_id') or None,request.form.get('reference'),request.form.get('po_number'),
              request.form.get('payment_terms'),request.form.get('delivery'),request.form.get('status'),
-             request.form.get('notes'),request.form.get('internal_note'),currency,rate,show,doc_id)
+             request.form.get('notes'),request.form.get('internal_note'),currency,rate,show,vat_percent,doc_id)
         )
         con.execute('delete from lines where doc_id=?',(doc_id,))
         _save_lines(con,doc_id)
@@ -732,10 +766,10 @@ def convert_v15(doc_id):
         con.close(); flash('Ce document ne peut pas être transformé en facture.'); return redirect(url_for('document',doc_id=doc_id))
     new_number=legacy.next_number('Facture')
     cur=con.execute(
-        """insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,internal_note,currency,fx_rate,show_conversion)
-           values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        """insert into docs(kind,number,doc_date,due_date,client_id,reference,po_number,payment_terms,delivery,status,notes,internal_note,currency,fx_rate,show_conversion,vat_percent)
+           values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         ('Facture',new_number,date.today().isoformat(),d['due_date'],d['client_id'],d['reference'],d['po_number'],
-         d['payment_terms'],d['delivery'],'Brouillon',d['notes'],d['internal_note'],d['currency'],d['fx_rate'],d['show_conversion'])
+         d['payment_terms'],d['delivery'],'Brouillon',d['notes'],d['internal_note'],d['currency'],d['fx_rate'],d['show_conversion'],d['vat_percent'])
     )
     new_id=cur.lastrowid
     for l in con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall():
@@ -758,7 +792,8 @@ def pdf_v15(doc_id):
                      from docs d left join clients c on c.id=d.client_id where d.id=?""",(doc_id,)).fetchone()
     lines=con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall()
     images=con.execute('select * from doc_images where doc_id=? order by id',(doc_id,)).fetchall()
-    total=legacy.total_for(con,doc_id)
+    totals=_doc_totals(con,doc_id)
+    total=totals['ttc']; ht=totals['ht']; vat_percent=totals['vat_percent']; vat_amount=totals['vat']
     con.close()
     if not d:
         return 'Document introuvable',404
@@ -814,8 +849,10 @@ def pdf_v15(doc_id):
         y-=h
 
     y-=1*mm
+    c.setFont('Helvetica-Bold',9); c.drawString(103*mm,y-4.5*mm,'TOTAL HT'); c.drawRightString(R-2*mm,y-4.5*mm,_number(ht,currency)); y-=6*mm
+    c.setFont('Helvetica',9); c.drawString(103*mm,y-4.5*mm,f'TVA {vat_percent:g} %'); c.drawRightString(R-2*mm,y-4.5*mm,_number(vat_amount,currency)); y-=6*mm
     c.setFillColorRGB(.68,.66,.66); c.rect(100*mm,y-8*mm,R-100*mm,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
-    c.setFont('Helvetica-Bold',9.5); c.drawString(103*mm,y-5.5*mm,'TOTAL en '+('euros' if currency=='EUR' else 'Ariary')); c.drawRightString(R-2*mm,y-5.5*mm,_number(total,currency))
+    c.setFont('Helvetica-Bold',9.5); c.drawString(103*mm,y-5.5*mm,'TOTAL TTC en '+('euros' if currency=='EUR' else 'Ariary')); c.drawRightString(R-2*mm,y-5.5*mm,_number(total,currency))
     y-=11*mm
     if show_conversion and alt_total is not None:
         c.setFont('Helvetica-Bold',9)
