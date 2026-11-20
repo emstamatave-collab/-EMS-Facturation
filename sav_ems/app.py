@@ -1,6 +1,11 @@
 import os
 import secrets
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from flask import current_app
+import hashlib
+import hmac
+import math
 from functools import wraps
 
 import psycopg2
@@ -57,7 +62,16 @@ TABLE_SQL = [
 """CREATE TABLE IF NOT EXISTS quotes (
  id SERIAL PRIMARY KEY, number TEXT NOT NULL UNIQUE, client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
  amount NUMERIC(14,2), status TEXT DEFAULT 'Brouillon', details TEXT,
- created_at TIMESTAMPTZ DEFAULT NOW())"""
+ created_at TIMESTAMPTZ DEFAULT NOW())""",
+"""CREATE TABLE IF NOT EXISTS login_attempts (
+ fingerprint TEXT PRIMARY KEY, hits INTEGER NOT NULL DEFAULT 1, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+"""CREATE TABLE IF NOT EXISTS audit_events (
+ id BIGSERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+ entity_type TEXT NOT NULL, entity_id INTEGER, operation TEXT NOT NULL,
+ event_time TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+"""CREATE INDEX IF NOT EXISTS idx_machine_vgp ON machines (vgp_next) WHERE vgp_next IS NOT NULL""",
+"""CREATE INDEX IF NOT EXISTS idx_interventions_status ON interventions (status,created_at DESC)""",
+"""CREATE INDEX IF NOT EXISTS idx_rentals_due ON rentals (end_date) WHERE status='Active'"""
 ]
 SCHEMA_READY = False
 
@@ -72,6 +86,7 @@ def ensure_schema():
     try:
         with conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(83921907)")
                 for statement in TABLE_SQL:
                     cur.execute(statement)
         SCHEMA_READY = True
@@ -96,6 +111,35 @@ def execute(statement, params=(), fetch="all"):
 
 def count(table, where="TRUE", params=()):
     return execute("SELECT count(*) AS n FROM " + table + " WHERE " + where, params, "one")["n"]
+
+def log_change(kind, item_id, operation):
+    """Minimal audit trail; do not log personal fields or passwords."""
+    actor=session.get("user", {}).get("id")
+    execute("INSERT INTO audit_events(user_id,entity_type,entity_id,operation) VALUES (%s,%s,%s,%s)",
+            (actor, kind, item_id, operation), fetch="none")
+
+def auth_fingerprint(email):
+    # Hash both email and IP: no raw credential, address or personal data in lockout table.
+    ip=request.remote_addr or "unknown"
+    msg=(ip+"|"+email.lower()).encode("utf-8")
+    return hmac.new(app.secret_key.encode("utf-8"),msg,hashlib.sha256).hexdigest()
+
+def auth_blocked(email):
+    f=auth_fingerprint(email)
+    row=execute("SELECT hits FROM login_attempts WHERE fingerprint=%s AND updated_at>NOW()-INTERVAL '15 minutes'",(f,),fetch="one")
+    return bool(row and row["hits"]>=8)
+
+def register_failed_login(email):
+    f=auth_fingerprint(email)
+    execute("""INSERT INTO login_attempts(fingerprint,hits,updated_at)
+                VALUES (%s,1,NOW())
+                ON CONFLICT (fingerprint) DO UPDATE SET
+                hits=CASE WHEN login_attempts.updated_at<NOW()-INTERVAL '15 minutes'
+                          THEN 1 ELSE login_attempts.hits+1 END,
+                updated_at=NOW()""",(f,),fetch="none")
+
+def clear_failed_login(email):
+    execute("DELETE FROM login_attempts WHERE fingerprint=%s",(auth_fingerprint(email),),fetch="none")
 
 def csrf():
     if "_csrf" not in session:
@@ -204,9 +248,20 @@ def validate_form(kind):
             vals[col]=None if ftype in ("number","decimal","date","datetime") or ftype.startswith("foreign:") else ""
             continue
         if ftype=="number":
-            vals[col]=int(raw)
+            number=int(raw)
+            if number<0 or number>100000000:
+                raise ValueError("Valeur hors limites : "+label)
+            vals[col]=number
         elif ftype=="decimal":
-            vals[col]=float(raw.replace(",","."))
+            try:
+                amount=Decimal(raw.replace(",","."))
+            except InvalidOperation:
+                raise ValueError("Montant incorrect : "+label)
+            if not amount.is_finite() or abs(amount)>Decimal("999999999999"):
+                raise ValueError("Montant hors limites : "+label)
+            if amount<0:
+                raise ValueError("La valeur ne peut pas être négative : "+label)
+            vals[col]=amount
         elif ftype.startswith("foreign:"):
             vals[col]=int(raw)
         elif ftype.startswith("choice:"):
@@ -241,10 +296,13 @@ app.jinja_env.filters["emsvalue"] = lambda value: ("—" if value is None or val
 
 @app.get("/health")
 def health():
+    # Readiness means the PostgreSQL connection actually works, not only that
+    # the worker previously completed a schema check.
     try:
-        ensure_schema()
+        execute("SELECT 1 AS ok",fetch="one")
         return jsonify({"ok": True, "app": "EMS SAV"})
     except Exception:
+        current_app.logger.exception("Database health check failed")
         return jsonify({"ok": False}), 503
 
 @app.route("/setup", methods=["GET","POST"])
@@ -254,7 +312,11 @@ def setup():
     if request.method=="POST":
         check_csrf()
         key=request.form.get("key","")
+        if auth_blocked("setup"):
+            flash("Trop de tentatives. Réessayez dans 15 minutes.", "error")
+            return render_template("auth.html",title="Activer EMS SAV",setup=True),429
         if not secrets.compare_digest(key,os.environ["SETUP_KEY"]):
+            register_failed_login("setup")
             flash("Code d'activation incorrect.", "error")
         elif len(request.form.get("password",""))<12:
             flash("Mot de passe : 12 caractères minimum.", "error")
@@ -277,12 +339,17 @@ def login():
         email=request.form.get("email","").strip().lower()
         pwd=request.form.get("password","")
         user=execute("SELECT id,name,email,role,password_hash FROM users WHERE email=%s",(email,),fetch="one")
+        if auth_blocked(email):
+            flash("Trop de tentatives. Réessayez dans 15 minutes.", "error")
+            return render_template("auth.html",title="Connexion EMS SAV",setup=False),429
         if user and check_password_hash(user["password_hash"],pwd):
+            clear_failed_login(email)
             session.clear()
             session.permanent=True
             session["user"]={k:user[k] for k in ("id","name","email","role")}
             csrf()
             return redirect(url_for("dashboard"))
+        register_failed_login(email)
         flash("Identifiants invalides.", "error")
     if count("users")==0:
         return redirect(url_for("setup"))
@@ -339,7 +406,7 @@ def listing(kind):
 @require_login
 def edit(kind,item_id=None):
     if kind not in FIELDS: abort(404)
-    if kind in ("quotes",) and session["user"]["role"]!="admin": abort(403)
+    if kind in ("quotes","clients","machines","rentals") and session["user"]["role"]!="admin": abort(403)
     row=None
     if item_id is not None:
         row=execute("SELECT * FROM "+kind+" WHERE id=%s",(item_id,),fetch="one")
@@ -353,10 +420,12 @@ def edit(kind,item_id=None):
                 sql="INSERT INTO "+kind+" ("+",".join(cols)+") VALUES ("+",".join(["%s"]*len(cols))+") RETURNING id"
                 new=execute(sql,list(data.values()),fetch="one")
                 item_id=new["id"]
+                log_change(kind,item_id,"création")
                 flash("Fiche enregistrée.", "success")
             else:
                 sql="UPDATE "+kind+" SET "+",".join(c+"=%s" for c in cols)+" WHERE id=%s"
                 execute(sql,list(data.values())+[item_id],fetch="none")
+                log_change(kind,item_id,"modification")
                 flash("Modifications enregistrées.", "success")
             return redirect(url_for("detail",kind=kind,item_id=item_id))
         except (ValueError,psycopg2.Error) as exc:
@@ -385,6 +454,7 @@ def set_status(kind,item_id):
     status=request.form.get("status","")
     if status not in statuses[kind]: abort(400)
     execute("UPDATE "+kind+" SET status=%s WHERE id=%s",(status,item_id),fetch="none")
+    log_change(kind,item_id,"statut : "+status)
     return redirect(url_for("detail",kind=kind,item_id=item_id))
 
 @app.route("/users",methods=["GET","POST"])
@@ -400,8 +470,9 @@ def users():
             flash("Nom, e-mail, rôle ou mot de passe incorrect (12 caractères min).","error")
         else:
             try:
-                execute("INSERT INTO users(name,email,password_hash,role) VALUES (%s,%s,%s,%s)",
-                        (name,email,generate_password_hash(password),role),fetch="none")
+                new_user=execute("INSERT INTO users(name,email,password_hash,role) VALUES (%s,%s,%s,%s) RETURNING id",
+                        (name,email,generate_password_hash(password),role),fetch="one")
+                log_change("users",new_user["id"],"création")
                 flash("Collaborateur créé.","success")
                 return redirect(url_for("users"))
             except psycopg2.Error:
