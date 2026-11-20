@@ -288,7 +288,7 @@ def validate_form(kind):
         if not vals.get("title"):
             if not vals.get("description"):
                 raise ValueError("Renseigne les travaux à effectuer.")
-            vals["title"]=vals["description"][:100].split("\\n")[0].strip() or "Intervention SAV"
+            vals["title"]=vals["description"][:100].splitlines()[0].strip() or "Intervention SAV"
     return vals
 
 def label_map(kind):
