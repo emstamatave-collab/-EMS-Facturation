@@ -1,0 +1,23 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-heading"><div><h1>Tableau de bord</h1><p class="muted">Bienvenue chez EMS Tamatave · {{today.strftime('%d/%m/%Y')}}</p></div><a class="btn primary" href="/r/interventions/new">+ Nouvelle intervention</a></div>
+<div class="stats-grid">
+  <a class="stat" href="/r/machines"><span class="stat-icon green">▣</span><small>Machines disponibles</small><strong>{{stats.machines}}</strong><span>Voir le parc</span></a>
+  <a class="stat" href="/r/interventions"><span class="stat-icon amber">⚒</span><small>Interventions en cours</small><strong>{{stats.interventions}}</strong><span>À suivre</span></a>
+  <a class="stat" href="/r/interventions"><span class="stat-icon blue">▤</span><small>À facturer</small><strong>{{stats.invoice}}</strong><span>Interventions terminées</span></a>
+  <a class="stat" href="/r/tasks"><span class="stat-icon purple">☑</span><small>Tâches à faire</small><strong>{{stats.tasks}}</strong><span>Voir les tâches</span></a>
+</div>
+<div class="dashboard-grid">
+<section class="panel"><div class="panel-header"><h2>⚠ VGP à programmer</h2><a href="/r/machines">Machines</a></div>
+{% for m in overdue %}
+<a class="record-row" href="{{url_for('detail',kind='machines',item_id=m.id)}}"><span><b>{{m.brand or ''}} {{m.model or ''}}</b><small>{{m.ref}}</small></span><span class="pill danger">{{m.vgp_next.strftime('%d/%m/%Y')}}</span></a>
+{% else %}<div class="empty"><b>Aucune VGP en retard</b><p>Les alertes apparaîtront ici dès que tu renseigneras les dates.</p></div>{% endfor %}</section>
+<section class="panel"><div class="panel-header"><h2>À planifier</h2><a href="/r/interventions">Tout voir</a></div>
+{% for i in plan %}<a class="record-row" href="{{url_for('detail',kind='interventions',item_id=i.id)}}"><span><b>{{i.title}}</b><small>{{names.get(i.client_id,'Client non renseigné')}}</small></span><span class="pill amber">À planifier</span></a>
+{% else %}<div class="empty"><b>Aucune intervention en attente</b><p>Crée ta première intervention SAV.</p></div>{% endfor %}</section>
+<section class="panel"><div class="panel-header"><h2>Locations bientôt terminées</h2><a href="/r/rentals">Locations</a></div>
+{% for r in upcoming %}<a class="record-row" href="{{url_for('detail',kind='rentals',item_id=r.id)}}"><span><b>{{names.get(r.client_id,'Client non renseigné')}}</b><small>Fin : {{r.end_date.strftime('%d/%m/%Y')}}</small></span><span class="pill blue">{{'Expirée' if r.end_date<today else 'Bientôt'}}</span></a>
+{% else %}<div class="empty"><b>Aucune échéance proche</b><p>Les locations sont suivies sur cette page.</p></div>{% endfor %}</section>
+<section class="panel"><div class="panel-header"><h2>Accès rapide</h2></div>
+<div class="quick-grid"><a href="/r/machines/new">+ Machine</a><a href="/r/clients/new">+ Client</a><a href="/r/tasks/new">+ Tâche</a><a href="/r/rentals/new">+ Location</a><a href="/r/quotes/new">+ Offre</a></div></section>
+</div>
+{% endblock %}
