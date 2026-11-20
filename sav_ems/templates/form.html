@@ -1,0 +1,20 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-heading"><div><a class="back" href="{{url_for('listing',kind=kind)}}">‹ Retour à {{kind}}</a><h1>{{title}}</h1><p class="muted">Renseignez les informations de l'entreprise EMS.</p></div></div>
+<form class="panel form-panel wide" method="post"><input type="hidden" name="_csrf" value="{{csrf()}}">
+<div class="fields-grid">
+{% for col,label,ftype,required in fields %}
+<label class="{{'full' if ftype=='textarea' else ''}}">{{label}}{{' *' if required else ''}}
+{% if ftype.startswith('choice:') %}
+<select name="{{col}}" {{'required' if required else ''}}><option value="">— Choisir —</option>
+{% for opt in ftype.split(':',1)[1].split('|') %}<option value="{{opt}}" {{'selected' if row.get(col)==opt else ''}}>{{opt}}</option>{% endfor %}</select>
+{% elif ftype.startswith('foreign:') %}
+<select name="{{col}}" {{'required' if required else ''}}><option value="">— Aucun —</option>
+{% for opt in options[col] %}<option value="{{opt.id}}" {{'selected' if row.get(col)|string==opt.id|string else ''}}>{{opt.label}}</option>{% endfor %}</select>
+{% elif ftype=='textarea' %}<textarea name="{{col}}" rows="4">{{row.get(col) or ''}}</textarea>
+{% else %}
+<input name="{{col}}" type="{{'number' if ftype in ['number','decimal'] else 'datetime-local' if ftype=='datetime' else 'date' if ftype=='date' else 'text'}}"
+value="{{row.get(col).strftime('%Y-%m-%dT%H:%M') if ftype=='datetime' and row.get(col) and row.get(col) is not string else row.get(col).strftime('%Y-%m-%d') if ftype=='date' and row.get(col) and row.get(col) is not string else row.get(col) or ''}}"
+{{'step=any' if ftype=='decimal' else ''}} {{'required' if required else ''}}>
+{% endif %}</label>
+{% endfor %}</div><div class="form-actions"><a class="btn neutral" href="{{url_for('listing',kind=kind)}}">Annuler</a><button class="btn primary">Enregistrer la fiche</button></div></form>
+{% endblock %}
