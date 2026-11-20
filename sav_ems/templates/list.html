@@ -1,24 +1,66 @@
 {% extends "base.html" %}{% block content %}
-<div class="page-heading"><div><h1>{{title}}</h1><p class="muted">{{rows|length}} résultat(s) affiché(s) · Données EMS uniquement</p></div>
-<a class="btn primary" href="{{url_for('edit',kind=kind)}}">+ {{'Nouvelle fiche' if kind not in ['machines','interventions'] else 'Nouvelle '+('machine' if kind=='machines' else 'intervention')}}</a></div>
-<form method="get" class="search-bar"><input name="q" value="{{search}}" placeholder="Rechercher {{title|lower}}…"><button class="btn neutral" type="submit">Rechercher</button></form>
-{% if kind=='machines' %}<div class="tabs">{% for value in ['','Vente','Location','Client'] %}<a class="{{'active' if category==value else ''}}" href="{{url_for('listing',kind=kind,categorie=value,q=search)}}">{{'Toutes' if not value else value}}</a>{% endfor %}</div>{% endif %}
-<div class="cards-grid">
-{% for r in rows %}
-<a class="machine-card" href="{{url_for('detail',kind=kind,item_id=r.id)}}">
-<div class="card-top"><span class="type-label">{{r.stock_type if kind=='machines' else title[:-1]}}</span>
-{% if badgestatus %}<span class="pill {{'green' if r.get(badgestatus) in ['Disponible','Active','Terminée','Clôturée','Acceptée'] else 'amber'}}">{{r.get(badgestatus) or 'Non défini'}}</span>{% endif %}</div>
-<h3>{{r.get(main) if r.get(main) is not none else '#'+(r.id|string)}}</h3>
 {% if kind=='machines' %}
-<p class="muted">{{r.brand or 'Marque'}}, {{r.model or 'modèle à compléter'}}</p>
-<div class="spec-grid"><span>Énergie <b>{{r.energy or '—'}}</b></span><span>Année <b>{{r.year or '—'}}</b></span><span>Heures <b>{{r.hours if r.hours is not none else '—'}}</b></span><span>Capacité <b>{{r.capacity or '—'}} kg</b></span></div>
-{% if r.vgp_next %}<p class="hint">Prochaine VGP : {{r.vgp_next.strftime('%d/%m/%Y')}}</p>{% endif %}
-{% elif kind=='clients' %}<p class="muted">{{r.city or 'Ville non renseignée'}} · {{r.contact or 'Contact à compléter'}}</p>
-{% elif kind=='interventions' %}<p class="muted">{{r.kind or 'SAV'}} · {{r.scheduled_at.strftime('%d/%m/%Y') if r.scheduled_at else 'Date à définir'}}</p>
-{% elif kind=='tasks' %}<p class="muted">{{r.description[:95] if r.description else 'Aucun détail'}}</p>
-{% elif kind=='rentals' %}<p class="muted">Début : {{r.start_date.strftime('%d/%m/%Y') if r.start_date else '—'}} · Fin : {{r.end_date.strftime('%d/%m/%Y') if r.end_date else '—'}}</p>
-{% elif kind=='quotes' %}<p class="muted">Montant : {{r.amount if r.amount is not none else '—'}} Ar</p>
+<div class="page-heading"><div><h1>Machines</h1><p class="muted">Parc EMS Tamatave · {{counts.get('Toutes',0)}} fiches</p></div><a class="btn primary" href="{{url_for('edit',kind=kind)}}">+ Ajouter une machine</a></div>
+<div class="mms-tabs">{% for value in ['','Vente','Location','Client'] %}{% set label=value or 'Toutes' %}
+<a class="{{'active' if category==value else ''}}" href="{{url_for('listing',kind=kind,categorie=value,q=search)}}">{{'Loc' if value=='Location' else label}} ({{counts.get(label,0)}})</a>{% endfor %}</div>
+<form method="get" class="machine-search">
+  <input name="categorie" type="hidden" value="{{category}}">
+  <div class="search-field"><span class="search-icon">⌕</span><input aria-label="Rechercher une machine" name="q" value="{{search}}" placeholder="Rechercher une machine…"></div>
+  <button class="filter-button" type="submit" aria-label="Rechercher">☷</button>
+  <div class="filter-strip">
+    <button name="tri" value="prix" class="sort-chip" type="submit">Prix ⇅</button>
+    <button name="tri" value="heures" class="sort-chip" type="submit">Heures ⇅</button>
+    <button name="tri" value="annee" class="sort-chip" type="submit">Année ⇅</button>
+    <button name="tri" value="capacite" class="sort-chip" type="submit">Capacité ⇅</button>
+    <label class="order-chip">Ordre <select name="sens"><option value="asc" {{'selected' if direction=='ASC' else ''}}>↑</option><option value="desc" {{'selected' if direction=='DESC' else ''}}>↓</option></select></label>
+    <button class="sort-chip add-sort" name="tri" value="nouveaux" type="submit">Récents ↓</button>
+  </div>
+</form>
+<div class="mms-machine-list">
+{% for r in rows %}
+<a href="{{url_for('detail',kind=kind,item_id=r.id)}}" class="mms-machine-row">
+ <div class="mms-machine-image"><img src="{{url_for('machine_photo',item_id=r.id)}}" loading="lazy" alt="" onerror="this.hidden=true;this.parentElement.classList.add('no-image')"><span class="fallback-forklift">▣</span></div>
+ <div class="mms-machine-info"><h3>{{r.brand or ''}} {{r.model or r.ref}}</h3>
+ <div class="mms-specs">{{r.energy or 'Énergie —'}} <span> | </span> {{r.year or '—'}} <span> | </span> {{r.hours if r.hours is not none else '—'}} h</div>
+ <div class="mms-specs lighter"><b>▣</b> {{r.capacity if r.capacity is not none else '—'}} kg &nbsp; ↟ {{r.lift_height if r.lift_height is not none else '—'}} m &nbsp; {{r.mast or ''}}</div>
+ <div class="mms-reference">{{r.ref}}</div></div>
+ <span class="mms-row-chevron">›</span>
+</a>
+{% else %}
+<div class="panel empty"><b>Aucune machine EMS enregistrée</b><p>Ajoute ta première machine pour la faire apparaître ici.</p><a class="btn primary" href="{{url_for('edit',kind='machines')}}">Créer une machine</a></div>
+{% endfor %}
+</div>
+{% else %}
+<div class="page-heading"><div><h1>{{title}}</h1><p class="muted">EMS Tamatave · {{rows|length}} résultat(s) affiché(s)</p></div>
+<a class="btn primary" href="{{url_for('edit',kind=kind)}}">+ {{'Nouvelle intervention' if kind=='interventions' else 'Nouvelle fiche'}}</a></div>
+<div class="list-toolbar">
+<form method="get" class="other-search">
+<div class="search-field"><span>⌕</span><input name="q" value="{{search}}" placeholder="Rechercher {{title|lower}}…"></div>
+{% if kind=='interventions' %}
+<select name="type" aria-label="Type"><option value="">Tous types</option>{% for typ in ['SAV','Livraison','Reprise','VGP','Entretien'] %}<option value="{{typ}}" {{'selected' if type_filter==typ else ''}}>{{typ}}</option>{% endfor %}</select>
 {% endif %}
-<div class="card-bottom"><span>Fiche n° {{r.id}}</span><span>Consulter ›</span></div></a>
-{% else %}<div class="panel empty full"><h2>Aucune fiche pour le moment</h2><p>Commence par ajouter une première entrée EMS.</p><a class="btn primary" href="{{url_for('edit',kind=kind)}}">Ajouter</a></div>{% endfor %}
-</div>{% endblock %}
+{% if kind in ['interventions','tasks'] %}
+<select name="technicien"><option value="">Tous les techniciens</option>{% for user in options.get('tech_id',[]) %}<option value="{{user.id}}" {{'selected' if tech|string==user.id|string else ''}}>{{user.label}}</option>{% endfor %}</select>
+{% endif %}
+<button class="btn neutral">Filtrer</button></form>
+{% if kind=='interventions' %}<a href="/planning" class="btn neutral">▦ Planning</a>{% endif %}
+</div>
+{% if kind in ['interventions','tasks','rentals'] %}<div class="mms-tabs">{% set opts=['À planifier','Planifiée','En cours','À facturer','Clôturée'] if kind=='interventions' else ['À faire','En cours','Terminée'] if kind=='tasks' else ['Active','Terminée'] %}<a class="{{'active' if not status else ''}}" href="{{url_for('listing',kind=kind)}}">Toutes</a>{% for opt in opts %}<a class="{{'active' if status==opt else ''}}" href="{{url_for('listing',kind=kind,statut=opt)}}">{{opt}}</a>{% endfor %}</div>{% endif %}
+<div class="mms-records">
+{% for r in rows %}
+<a class="mms-record" href="{{url_for('detail',kind=kind,item_id=r.id)}}">
+  <span class="record-icon">{{'⚒' if kind=='interventions' else '☑' if kind=='tasks' else '▣' if kind=='clients' else '▤'}}</span>
+  <span class="record-copy"><strong>{{r.get(main) if r.get(main) is not none else 'Fiche n° '+r.id|string}}</strong>
+  {% if kind=='interventions' %}<small>{{r.kind or 'SAV'}} · {{r.scheduled_at.strftime('%d/%m/%Y %H:%M') if r.scheduled_at else 'À planifier'}}</small>
+  {% elif kind=='clients' %}<small>{{r.city or 'Ville à renseigner'}} · {{r.contact or 'Contact non renseigné'}}</small>
+  {% elif kind=='tasks' %}<small>{{r.due_date.strftime('%d/%m/%Y') if r.due_date else 'Sans échéance'}}</small>
+  {% elif kind=='rentals' %}<small>{{r.start_date.strftime('%d/%m/%Y') if r.start_date else '—'}} → {{r.end_date.strftime('%d/%m/%Y') if r.end_date else '—'}}</small>
+  {% elif kind=='quotes' %}<small>{{r.amount if r.amount is not none else '—'}} Ar</small>{% endif %}
+  </span>
+  {% if badgestatus %}<span class="pill {{'green' if r.get(badgestatus) in ['Disponible','Active','Terminée','Clôturée','Acceptée'] else 'amber'}}">{{r.get(badgestatus) or 'À compléter'}}</span>{% endif %}
+</a>
+{% else %}<div class="panel empty"><b>Aucune fiche pour le moment</b><p>Commence par ajouter une fiche EMS.</p><a class="btn primary" href="{{url_for('edit',kind=kind)}}">Ajouter</a></div>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}
