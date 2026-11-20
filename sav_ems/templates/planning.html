@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-heading"><div><h1>Planning</h1><p class="muted">Interventions, livraisons et reprises EMS</p></div><a class="btn primary" href="/r/interventions/new">+ Créer une intervention</a></div>
+<div class="panel calendar-panel">
+<div class="calendar-heading"><a href="{{url_for('planning',annee=previous.year,mois=previous.month)}}" class="btn neutral" aria-label="Mois précédent">‹</a>
+<strong>{{month_label}}</strong><a href="{{url_for('planning',annee=following.year,mois=following.month)}}" class="btn neutral" aria-label="Mois suivant">›</a></div>
+<div class="month-grid">{% for day in ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'] %}<b class="day-head">{{day}}</b>{% endfor %}
+{% for week in weeks %}{% for day in week %}
+<div class="calendar-day {{'outside' if day.month!=month else ''}} {{'today' if day==today else ''}}">
+<span class="day-number">{{day.day}}</span>
+{% for job in by_day.get(day,[]) %}<a class="calendar-event" href="{{url_for('detail',kind='interventions',item_id=job.id)}}" title="{{job.title}}">
+{{job.scheduled_at.strftime('%H:%M')}} {{job.title|truncate(30)}}</a>{% endfor %}
+</div>{% endfor %}{% endfor %}</div>
+</div>
+<div class="panel"><h2>Interventions du mois ({{jobs|length}})</h2>
+{% for job in jobs %}<a class="record-row" href="{{url_for('detail',kind='interventions',item_id=job.id)}}"><span><b>{{job.title}}</b><small>{{job.scheduled_at.strftime('%d/%m/%Y à %H:%M')}} · {{job.client_name or 'Client non renseigné'}} · {{job.tech_name or 'À assigner'}}</small></span><span class="pill amber">{{job.status}}</span></a>
+{% else %}<div class="empty"><b>Pas encore d'intervention planifiée</b><p>Le calendrier se remplira automatiquement lorsque tu fixes une date.</p></div>{% endfor %}
+</div>
+{% endblock %}
