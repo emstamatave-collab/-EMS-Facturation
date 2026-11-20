@@ -2,7 +2,7 @@
 <div class="auth-box"><div class="brand brand-auth"><span class="brand-icon">EMS</span><span>EMS Tamatave<small>APPLICATION DE GESTION SAV</small></span></div>
 <h1>{{title}}</h1><p class="muted">{{'Créez le premier compte administrateur pour activer votre espace EMS.' if setup else 'Connectez-vous à votre espace professionnel sécurisé.'}}</p>
 <form method="post" class="panel form-panel"><input type="hidden" name="_csrf" value="{{csrf()}}">
-{% if setup %}
+{% if setup %}<p class="muted small">Le code d’activation est disponible dans ton compte Render, service <b>ems-sav-tamatave</b>, rubrique <b>Environment</b>, variable <b>SETUP_KEY</b>. Ce code sert uniquement à créer le premier administrateur. <a href="https://dashboard.render.com/web/srv-dc018vmi0phs73bdm2cg" target="_blank" rel="noopener noreferrer" style="color:#08784d;text-decoration:underline">Ouvrir Render</a></p>
 <label>Code d’activation<input name="key" type="password" required autocomplete="off"></label>
 <label>Votre nom<input name="name" required autocomplete="name"></label>
 {% endif %}
