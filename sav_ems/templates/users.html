@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-heading"><div><h1>Collaborateurs</h1><p class="muted">Ajoutez les techniciens et administrateurs EMS.</p></div></div>
+<section class="panel form-panel"><h2>Créer un compte</h2>
+<form method="post"><input type="hidden" name="_csrf" value="{{csrf()}}">
+<div class="fields-grid"><label>Nom<input required name="name"></label><label>E-mail<input required type="email" name="email"></label>
+<label>Mot de passe provisoire<input required type="password" minlength="12" name="password"></label>
+<label>Rôle<select name="role"><option value="technicien">Technicien</option><option value="admin">Administrateur</option></select></label></div>
+<button class="btn primary">Ajouter un utilisateur</button></form></section>
+<section class="panel"><h2>Équipe</h2>
+{% for u in rows %}<div class="record-row"><span><b>{{u.name}}</b><small>{{u.email}}</small></span><span class="pill green">{{u.role}}</span></div>{% endfor %}</section>{% endblock %}
