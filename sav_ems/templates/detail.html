@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}
+<div class="page-heading"><div><a class="back" href="{{url_for('listing',kind=kind)}}">‹ {{title}}</a>
+<h1>{{item.get('ref') or item.get('name') or item.get('title') or item.get('number') or 'Fiche n° '+item.id|string}}</h1>
+<p class="muted">Fiche EMS n° {{item.id}}</p></div><a class="btn primary" href="{{url_for('edit',kind=kind,item_id=item.id)}}">Modifier</a></div>
+<div class="panel detail-panel"><h2>Informations</h2><dl class="detail-grid">
+{% for col,label,ftype,required in fields %}<div><dt>{{label}}</dt><dd>{{display_value(col,item.get(col),options)}}</dd></div>{% endfor %}
+</dl></div>
+{% if kind in ['tasks','interventions','rentals'] %}
+<div class="panel form-panel action-panel"><h2>Changer le statut</h2><form method="post" action="{{url_for('set_status',kind=kind,item_id=item.id)}}"><input type="hidden" name="_csrf" value="{{csrf()}}">
+<select name="status">
+{% set statuses=['À faire','En cours','Terminée'] if kind=='tasks' else ['Active','Terminée'] if kind=='rentals' else ['À planifier','Planifiée','En cours','À facturer','Clôturée'] %}
+{% for s in statuses %}<option value="{{s}}" {{'selected' if item.status==s else ''}}>{{s}}</option>{% endfor %}
+</select><button class="btn primary">Mettre à jour</button></form></div>
+{% endif %}
+{% endblock %}
