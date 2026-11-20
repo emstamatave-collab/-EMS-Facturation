@@ -14,7 +14,7 @@
 {% for col,label,ftype,required in fields %}<div><dt>{{label}}</dt><dd>{{display_value(col,item.get(col),options)}}</dd></div>{% endfor %}
 </dl></div>
 {% if kind=='machines' %}
-<div class="actions-strip"><a class="btn neutral" href="/r/interventions/new">⚒ Programmer une intervention</a><a class="btn neutral" href="/r/quotes/new">▤ Préparer une offre</a></div>
+<div class="actions-strip"><a class="btn neutral" href="{{url_for('edit',kind='interventions',machine_id=item.id,client_id=item.client_id or '')}}">⚒ Programmer une intervention</a><a class="btn neutral" href="{{url_for('edit',kind='quotes',client_id=item.client_id or '')}}">▤ Préparer une offre</a></div>
 {% endif %}
 {% if kind in ['tasks','interventions','rentals'] %}
 <div class="panel form-panel action-panel"><h2>Suivi {{'de l’intervention' if kind=='interventions' else 'du dossier'}}</h2><form method="post" action="{{url_for('set_status',kind=kind,item_id=item.id)}}"><input type="hidden" name="_csrf" value="{{csrf()}}">
