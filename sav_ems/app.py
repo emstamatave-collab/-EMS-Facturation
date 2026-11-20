@@ -6,6 +6,9 @@ from flask import current_app
 import hashlib
 import hmac
 import math
+import io
+import calendar
+from PIL import Image, UnidentifiedImageError
 from functools import wraps
 
 import psycopg2
@@ -23,7 +26,7 @@ if not os.environ.get("SETUP_KEY"):
 app.secret_key = os.environ["SECRET_KEY"]
 app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
                   SESSION_COOKIE_SAMESITE="Lax", PERMANENT_SESSION_LIFETIME=timedelta(days=7),
-                  MAX_CONTENT_LENGTH=1024 * 1024)
+                  MAX_CONTENT_LENGTH=3 * 1024 * 1024)
 
 DB_URL = os.environ["DATABASE_URL"]
 TABLE_SQL = [
@@ -71,7 +74,12 @@ TABLE_SQL = [
  event_time TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
 """CREATE INDEX IF NOT EXISTS idx_machine_vgp ON machines (vgp_next) WHERE vgp_next IS NOT NULL""",
 """CREATE INDEX IF NOT EXISTS idx_interventions_status ON interventions (status,created_at DESC)""",
-"""CREATE INDEX IF NOT EXISTS idx_rentals_due ON rentals (end_date) WHERE status='Active'"""
+"""CREATE INDEX IF NOT EXISTS idx_rentals_due ON rentals (end_date) WHERE status='Active'""",
+"""ALTER TABLE interventions ADD COLUMN IF NOT EXISTS duration_hours NUMERIC(6,2)""",
+"""ALTER TABLE interventions ADD COLUMN IF NOT EXISTS address TEXT""",
+"""ALTER TABLE machines ADD COLUMN IF NOT EXISTS photo_data BYTEA""",
+"""ALTER TABLE machines ADD COLUMN IF NOT EXISTS photo_mime TEXT""",
+"""ALTER TABLE machines ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"""
 ]
 SCHEMA_READY = False
 
@@ -208,7 +216,9 @@ FIELDS = {
  ("tech_id", "Technicien", "foreign:users", False),
  ("kind", "Type", "choice:SAV|Livraison|Reprise|VGP|Entretien", False),
  ("status", "Statut", "choice:À planifier|Planifiée|En cours|À facturer|Clôturée", False),
- ("scheduled_at", "Date prévue", "datetime", False),
+ ("scheduled_at", "Date et heure", "datetime", False),
+ ("duration_hours", "Durée prévue (heures)", "decimal", False),
+ ("address", "Adresse intervention", "text", False),
  ("description", "Travaux / compte rendu", "textarea", False)],
 "tasks": [
  ("title", "Tâche", "text", True),("tech_id", "Assignée à", "foreign:users", False),
@@ -381,10 +391,24 @@ def dashboard():
 def listing(kind):
     if kind not in FIELDS: abort(404)
     category=request.args.get("categorie","")
-    search=request.args.get("q","").strip()
+    search=request.args.get("q","").strip()[:120]
+    status=request.args.get("statut","")[:40]
+    tech=request.args.get("technicien","")
+    type_filter=request.args.get("type","")[:40]
+    order=request.args.get("tri","")[:30]
     where=[];params=[]
     if kind=="machines" and category in ("Vente","Location","Client"):
         where.append("stock_type=%s");params.append(category)
+    if kind in ("interventions","tasks","rentals") and status:
+        valid={"interventions":["À planifier","Planifiée","En cours","À facturer","Clôturée"],
+               "tasks":["À faire","En cours","Terminée"],
+               "rentals":["Active","Terminée"]}[kind]
+        if status in valid:
+            where.append("status=%s");params.append(status)
+    if kind=="interventions" and type_filter in ["SAV","Livraison","Reprise","VGP","Entretien"]:
+        where.append("kind=%s");params.append(type_filter)
+    if kind in ("interventions","tasks") and tech.isdigit():
+        where.append("tech_id=%s");params.append(int(tech))
     if search:
         cols=[MAIN[kind]]
         if kind=="machines": cols+=["brand","model","serial"]
@@ -393,13 +417,24 @@ def listing(kind):
         params.extend(["%"+search+"%"]*len(cols))
     sql="SELECT * FROM "+kind
     if where: sql+=" WHERE "+" AND ".join(where)
-    sql+=" ORDER BY id DESC LIMIT 250"
+    sort_map={
+        "machines":{"prix":"price_sale","heures":"hours","annee":"year","capacite":"capacity","nouveaux":"id"},
+        "interventions":{"date":"scheduled_at","nouveaux":"id"}}
+    sort_col=sort_map.get(kind,{}).get(order,"id")
+    direction="ASC" if request.args.get("sens")=="asc" else "DESC"
+    sql+=" ORDER BY "+sort_col+" "+direction+" NULLS LAST, id DESC LIMIT 250"
     rows=execute(sql,params)
     options=label_map(kind)
+    counts={}
+    if kind=="machines":
+        for row in execute("SELECT stock_type, count(*) AS n FROM machines GROUP BY stock_type"):
+            counts[row["stock_type"]]=row["n"]
+        counts["Toutes"]=sum(counts.values())
     return render_template("list.html",title=TITLES[kind],kind=kind,rows=rows,
-                           main=MAIN[kind],badgestatus=BADGE.get(kind),
+                           main=MAIN[kind],badgestatus=BADGE.get(kind),counts=counts,
                            fields=FIELDS[kind],options=options,search=search,category=category,
-                           display_value=display_value)
+                           status=status,tech=tech,type_filter=type_filter,order=order,
+                           direction=direction,display_value=display_value)
 
 @app.route("/r/<kind>/new",methods=["GET","POST"])
 @app.route("/r/<kind>/<int:item_id>/edit",methods=["GET","POST"])
@@ -456,6 +491,80 @@ def set_status(kind,item_id):
     execute("UPDATE "+kind+" SET status=%s WHERE id=%s",(status,item_id),fetch="none")
     log_change(kind,item_id,"statut : "+status)
     return redirect(url_for("detail",kind=kind,item_id=item_id))
+
+
+@app.route("/planning")
+@require_login
+def planning():
+    """Liste et calendrier mensuel, basé sur les interventions EMS."""
+    today=date.today()
+    try:
+        year=int(request.args.get("annee",today.year))
+        month=int(request.args.get("mois",today.month))
+        if not (2020<=year<=2100 and 1<=month<=12):
+            raise ValueError
+    except ValueError:
+        return redirect(url_for("planning"))
+    first=date(year,month,1)
+    nxt=date(year+1,1,1) if month==12 else date(year,month+1,1)
+    prev=date(year-1,12,1) if month==1 else date(year,month-1,1)
+    last=(nxt-timedelta(days=1))
+    jobs=execute("""SELECT i.id,i.title,i.kind,i.status,i.scheduled_at,
+                   c.name AS client_name,u.name AS tech_name
+                   FROM interventions i LEFT JOIN clients c ON c.id=i.client_id
+                   LEFT JOIN users u ON u.id=i.tech_id
+                   WHERE i.scheduled_at >= %s AND i.scheduled_at < %s
+                   ORDER BY i.scheduled_at, i.id""",
+                 (first,nxt))
+    by_day={}
+    for job in jobs:
+        key=job["scheduled_at"].date()
+        by_day.setdefault(key,[]).append(job)
+    weeks=calendar.Calendar(firstweekday=0).monthdatescalendar(year,month)
+    return render_template("planning.html",title="Planning",weeks=weeks,
+                           jobs=jobs,by_day=by_day,month_label=first.strftime("%m/%Y"),
+                           month=month,year=year,previous=prev,following=nxt,today=today)
+
+@app.post("/r/machines/<int:item_id>/photo")
+@require_admin
+def upload_machine_photo(item_id):
+    check_csrf()
+    upload=request.files.get("photo")
+    if upload is None or not upload.filename:
+        flash("Sélectionne une photo.", "error")
+        return redirect(url_for("detail",kind="machines",item_id=item_id))
+    try:
+        raw=upload.read(2*1024*1024+1)
+        if len(raw)>2*1024*1024:
+            raise ValueError("Photo supérieure à 2 Mo.")
+        img=Image.open(io.BytesIO(raw))
+        img.verify()
+        img=Image.open(io.BytesIO(raw))
+        img.thumbnail((1200,1200))
+        if img.mode not in ("RGB","RGBA"): img=img.convert("RGB")
+        buffer=io.BytesIO()
+        img.save(buffer,format="WEBP",quality=80,method=4)
+        content=buffer.getvalue()
+        if len(content)>1200000:
+            raise ValueError("Photo trop volumineuse après compression.")
+        execute("UPDATE machines SET photo_data=%s, photo_mime=%s, updated_at=NOW() WHERE id=%s",
+                (psycopg2.Binary(content),"image/webp",item_id),fetch="none")
+        log_change("machines",item_id,"nouvelle photo")
+        flash("Photo enregistrée.", "success")
+    except (UnidentifiedImageError,OSError,ValueError,Image.DecompressionBombError):
+        flash("Image invalide ou trop volumineuse. Utilise JPG, PNG ou WebP.", "error")
+    return redirect(url_for("detail",kind="machines",item_id=item_id))
+
+@app.get("/r/machines/<int:item_id>/photo")
+@require_login
+def machine_photo(item_id):
+    photo=execute("SELECT photo_data,photo_mime FROM machines WHERE id=%s",(item_id,),fetch="one")
+    if photo is None or not photo.get("photo_data"):
+        abort(404)
+    content=bytes(photo["photo_data"])
+    resp=Response(content,mimetype="image/webp")
+    resp.headers["Cache-Control"]="private, max-age=300"
+    return resp
 
 @app.route("/users",methods=["GET","POST"])
 @require_admin
