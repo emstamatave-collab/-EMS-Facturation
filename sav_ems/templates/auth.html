@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block content %}
+<div class="auth-box"><div class="brand brand-auth"><span class="brand-icon">EMS</span><span>EMS Tamatave<small>APPLICATION DE GESTION SAV</small></span></div>
+<h1>{{title}}</h1><p class="muted">{{'Créez le premier compte administrateur pour activer votre espace EMS.' if setup else 'Connectez-vous à votre espace professionnel sécurisé.'}}</p>
+<form method="post" class="panel form-panel"><input type="hidden" name="_csrf" value="{{csrf()}}">
+{% if setup %}
+<label>Code d’activation<input name="key" type="password" required autocomplete="off"></label>
+<label>Votre nom<input name="name" required autocomplete="name"></label>
+{% endif %}
+<label>Adresse e-mail<input name="email" type="email" required autocomplete="email"></label>
+<label>Mot de passe<input name="password" type="password" required {{'minlength="12"' if setup else ''}} autocomplete="{{'new-password' if setup else 'current-password'}}"></label>
+<button class="btn primary" type="submit">{{'Créer le compte administrateur' if setup else 'Se connecter'}}</button></form>
+<p class="muted small">Accès réservé aux utilisateurs autorisés d’Europe Manutention Service Tamatave.</p></div>
+{% endblock %}
