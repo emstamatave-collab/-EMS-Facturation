@@ -1,6 +1,31 @@
 {% extends "base.html" %}{% block content %}
-<div class="page-heading"><div><a class="back" href="{{url_for('listing',kind=kind)}}">‹ Retour à {{kind}}</a><h1>{{title}}</h1><p class="muted">Renseignez les informations de l'entreprise EMS.</p></div></div>
-<form class="panel form-panel wide" method="post"><input type="hidden" name="_csrf" value="{{csrf()}}">
+<div class="page-heading"><div><a class="back" href="{{url_for('listing',kind=kind)}}">‹ {{'Interventions' if kind=='interventions' else 'Retour'}}</a><h1>{{title}}</h1></div></div>
+<form class="panel form-panel wide {{'intervention-form' if kind=='interventions' else ''}}" method="post">
+<input type="hidden" name="_csrf" value="{{csrf()}}">
+{% if kind=='interventions' %}
+<div class="intervention-types">
+  {% for value,label,emoji in [('SAV','⚒ Intervention','⚒'),('Livraison','🚚 Livraison','🚚'),('Reprise','▣ Reprise','▣')] %}
+  <label class="intervention-type"><input type="radio" name="kind" value="{{value}}" {{'checked' if (row.get('kind') or 'SAV')==value else ''}}><span>{{label}}</span></label>{% endfor %}
+</div>
+<label class="full">Travaux à effectuer * <button class="dictate" type="button" onclick="dictateWork()">🎙 Dicter</button>
+  <textarea id="work-text" name="description" rows="5" required placeholder="Ex : Changement chaîne mât, vidange hydraulique, diagnostic démarreur…">{{row.get('description') or ''}}</textarea>
+</label>
+<div class="fields-grid">
+<label class="full">Objet court (facultatif)<input type="text" name="title" value="{{row.get('title') or ''}}" placeholder="Automatiquement repris des travaux si vide"></label>
+<label class="full">Client
+<select name="client_id" id="intervention-client"><option value="">— Choisir un client —</option>
+{% for opt in options.get('client_id',[]) %}<option value="{{opt.id}}" {{'selected' if row.get('client_id')|string==opt.id|string else ''}}>{{opt.label}}</option>{% endfor %}</select></label>
+<label class="full">Machine
+<select name="machine_id"><option value="">— Aucune machine —</option>{% for opt in options.get('machine_id',[]) %}<option value="{{opt.id}}" {{'selected' if row.get('machine_id')|string==opt.id|string else ''}}>{{opt.label}}</option>{% endfor %}</select></label>
+<label>Date et heure<input name="scheduled_at" type="datetime-local" value="{{row.get('scheduled_at').strftime('%Y-%m-%dT%H:%M') if row.get('scheduled_at') and row.get('scheduled_at') is not string else row.get('scheduled_at') or ''}}"></label>
+<label>Durée prévue (h)<input name="duration_hours" type="number" step="0.25" min="0" max="168" value="{{row.get('duration_hours') or 1}}"></label>
+<label class="full">Adresse intervention<input name="address" value="{{row.get('address') or ''}}" placeholder="Adresse du client, ville"></label>
+<label class="full">Assigner à
+<select name="tech_id"><option value="">— À planifier —</option>{% for opt in options.get('tech_id',[]) %}<option value="{{opt.id}}" {{'selected' if row.get('tech_id')|string==opt.id|string else ''}}>{{opt.label}}</option>{% endfor %}</select></label>
+<label class="full">Statut<select name="status">{% for status in ['À planifier','Planifiée','En cours','À facturer','Clôturée'] %}<option value="{{status}}" {{'selected' if (row.get('status') or 'À planifier')==status else ''}}>{{status}}</option>{% endfor %}</select></label>
+</div>
+<button class="btn primary full-button" type="submit">+ {{'Enregistrer les modifications' if row.get('id') else "Créer l’intervention"}}</button>
+{% else %}
 <div class="fields-grid">
 {% for col,label,ftype,required in fields %}
 <label class="{{'full' if ftype=='textarea' else ''}}">{{label}}{{' *' if required else ''}}
@@ -16,5 +41,16 @@
 value="{{row.get(col).strftime('%Y-%m-%dT%H:%M') if ftype=='datetime' and row.get(col) and row.get(col) is not string else row.get(col).strftime('%Y-%m-%d') if ftype=='date' and row.get(col) and row.get(col) is not string else row.get(col) or ''}}"
 {{'step=any' if ftype=='decimal' else ''}} {{'required' if required else ''}}>
 {% endif %}</label>
-{% endfor %}</div><div class="form-actions"><a class="btn neutral" href="{{url_for('listing',kind=kind)}}">Annuler</a><button class="btn primary">Enregistrer la fiche</button></div></form>
+{% endfor %}</div><div class="form-actions"><a class="btn neutral" href="{{url_for('listing',kind=kind)}}">Annuler</a><button class="btn primary">Enregistrer la fiche</button></div>
+{% endif %}
+</form>
+{% if kind=='interventions' %}<script>
+function dictateWork(){
+ const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!Speech){alert("La dictée n'est pas disponible dans ce navigateur. Utilisez le micro du clavier iPhone.");return}
+ const r=new Speech();r.lang="fr-FR";r.interimResults=false;
+ r.onresult=e=>{const x=document.getElementById("work-text");x.value+=(x.value?" ":"")+e.results[0][0].transcript};
+ r.onerror=()=>alert("Dictée interrompue. Vérifiez l'autorisation du microphone.");r.start();
+}
+</script>{% endif %}
 {% endblock %}
