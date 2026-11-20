@@ -4,7 +4,7 @@
 <input type="hidden" name="_csrf" value="{{csrf()}}">
 {% if kind=='interventions' %}
 <div class="intervention-types">
-  {% for value,label,emoji in [('SAV','⚒ Intervention','⚒'),('Livraison','🚚 Livraison','🚚'),('Reprise','▣ Reprise','▣')] %}
+  {% for value,label,emoji in [('SAV','⚒ Intervention','⚒'),('Livraison','🚚 Livraison','🚚'),('Reprise','▣ Reprise','▣'),('VGP','✓ VGP','✓'),('Entretien','◷ Entretien','◷')] %}
   <label class="intervention-type"><input type="radio" name="kind" value="{{value}}" {{'checked' if (row.get('kind') or 'SAV')==value else ''}}><span>{{label}}</span></label>{% endfor %}
 </div>
 <label class="full">Travaux à effectuer * <button class="dictate" type="button" onclick="dictateWork()">🎙 Dicter</button>
