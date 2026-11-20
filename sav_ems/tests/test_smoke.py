@@ -81,5 +81,56 @@ class SavSmokeTests(unittest.TestCase):
             self.assertEqual(self.client.post("/r/clients/new",data={"name":"Test Client"}).status_code,403)
 
 
+
+    def admin_session(self):
+        with self.client.session_transaction() as sess:
+            sess["user"]={"id":1,"name":"Admin test","role":"admin","email":"admin@example.com"}
+            sess["_csrf"]="testcsrf"
+
+    def test_mms_machine_listing_renders(self):
+        self.admin_session()
+        with patch.object(ems,"execute",return_value=[]):
+            response=self.client.get("/r/machines?categorie=Vente&tri=heures")
+            self.assertEqual(response.status_code,200)
+            self.assertIn(b"Rechercher une machine",response.data)
+            self.assertIn(b"Capacit",response.data)
+
+    def test_intervention_form_from_mms_renders(self):
+        self.admin_session()
+        with patch.object(ems,"execute",return_value=[]):
+            response=self.client.get("/r/interventions/new")
+            self.assertEqual(response.status_code,200)
+            self.assertIn(b"Livraison",response.data)
+            self.assertIn(b"Reprise",response.data)
+            self.assertIn(b"Dicter",response.data)
+
+    def test_intervention_title_generated_from_work(self):
+        with ems.app.test_request_context(method="POST",data={"description":"Changement pompe hydraulique\\nEssais","kind":"SAV","status":"À planifier"}):
+            values=ems.validate_form("interventions")
+            self.assertTrue(values["title"].startswith("Changement"))
+
+    def test_planning_page_renders(self):
+        self.admin_session()
+        with patch.object(ems,"execute",return_value=[]):
+            response=self.client.get("/planning?mois=11&annee=2026")
+            self.assertEqual(response.status_code,200)
+            self.assertIn(b"Planning",response.data)
+
+    def test_machine_detail_and_photo_upload_form_render(self):
+        self.admin_session()
+        machine={"id":1,"ref":"EMS-0001","brand":"STILL","model":"EXV16",
+            "year":2021,"status":"Disponible","energy":"Électrique"}
+        with patch.object(ems,"execute",return_value=machine):
+            response=self.client.get("/r/machines/1")
+            self.assertEqual(response.status_code,200)
+            self.assertIn(b"Enregistrer la photo",response.data)
+
+    def test_photo_requires_admin(self):
+        with self.client.session_transaction() as sess:
+            sess["user"]={"id":2,"name":"Technicien test","role":"technicien","email":"tech@example.com"}
+            sess["_csrf"]="testcsrf"
+        response=self.client.post("/r/machines/1/photo",data={"_csrf":"testcsrf"})
+        self.assertEqual(response.status_code,403)
+
 if __name__=="__main__":
     unittest.main()
