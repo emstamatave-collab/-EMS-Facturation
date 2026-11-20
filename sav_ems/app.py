@@ -450,6 +450,12 @@ def edit(kind,item_id=None):
     if kind not in FIELDS: abort(404)
     if kind in ("quotes","clients","machines","rentals") and session["user"]["role"]!="admin": abort(403)
     row=None
+    if item_id is None and request.method=="GET":
+        row={}
+        for field_name in ("client_id","machine_id","kind"):
+            value=request.args.get(field_name,"")
+            if value and (field_name=="kind" or value.isdigit()):
+                row[field_name]=value
     if item_id is not None:
         row=execute("SELECT * FROM "+kind+" WHERE id=%s",(item_id,),fetch="one")
         if not row: abort(404)
