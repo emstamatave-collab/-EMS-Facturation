@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#08784d"><meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="EMS SAV">
-  <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
-  <title>{{ title }} · EMS Tamatave</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2f7a25"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="EMS">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
+<title>{{ title }} · EMS Tamatave</title>
 </head>
 <body>
 {% if me %}
@@ -14,10 +14,11 @@
   <a href="/" class="brand"><span class="brand-icon">EMS</span><span>Europe Manutention<small>TAMATAVE · SERVICE</small></span></a>
   <nav class="side-nav">
     <a class="{{'selected' if request.path=='/' else ''}}" href="/">⌂ &nbsp; Tableau de bord</a>
-    <a href="/r/machines">▣ &nbsp; Machines</a>
-    <a href="/r/interventions">⚒ &nbsp; Interventions</a>
-    <a href="/r/tasks">☑ &nbsp; Tâches</a>
-    <a href="/r/clients">♙ &nbsp; Clients</a>
+    <a class="{{'selected' if '/machines' in request.path else ''}}" href="/r/machines">▣ &nbsp; Machines</a>
+    <a class="{{'selected' if '/interventions' in request.path else ''}}" href="/r/interventions">⚒ &nbsp; Interventions</a>
+    <a class="{{'selected' if request.path=='/planning' else ''}}" href="/planning">▦ &nbsp; Planning</a>
+    <a class="{{'selected' if '/tasks' in request.path else ''}}" href="/r/tasks">☑ &nbsp; Tâches</a>
+    <a class="{{'selected' if '/clients' in request.path else ''}}" href="/r/clients">♙ &nbsp; Clients</a>
     <a href="/r/rentals">◷ &nbsp; Locations</a>
     <a href="/r/quotes">▤ &nbsp; Offres</a>
     {% if me.role=='admin' %}<a href="/users">♟ &nbsp; Collaborateurs</a>{% endif %}
@@ -25,7 +26,10 @@
   <div class="side-footer"><a href="/password">Mon compte · {{me.name}}</a>
   <form action="/logout" method="post"><input type="hidden" name="_csrf" value="{{csrf()}}"><button class="logout">Se déconnecter</button></form></div>
 </aside>
-<header class="mobile-header"><a href="/" class="brand"><span class="brand-icon">EMS</span><span>EMS Tamatave<small>GESTION SAV</small></span></a><a href="/password" class="avatar" aria-label="Mon compte">{{me.name[:1]}}</a></header>
+<header class="mobile-header">
+  <div class="mobile-page-name"><strong>{{title}}</strong><small>{{today.strftime('%a %d %b') if today else 'EMS Tamatave'}}</small></div>
+  <a href="/password" class="avatar" aria-label="Mon compte">{{me.name[:1]}}</a>
+</header>
 {% endif %}
 <main class="{{'main' if me else 'public-main'}}">
   {% if me %}<div class="topline"><span class="eyebrow">EMS · EUROPE MANUTENTION SERVICE</span><span class="identity">{{me.name}} · {{'Administrateur' if me.role=='admin' else 'Technicien'}}</span></div>{% endif %}
@@ -36,9 +40,19 @@
 </main>
 {% if me %}
 <nav class="bottom-nav">
-  <a href="/"><span>⌂</span>Accueil</a><a href="/r/machines"><span>▣</span>Machines</a>
-  <a href="/r/interventions"><span>⚒</span>Interv.</a><a href="/r/tasks"><span>☑</span>Tâches</a>
-  <a href="/r/clients"><span>♙</span>Clients</a>
+  <a href="/" class="{{'active' if request.path=='/' else ''}}"><span>⌂</span>Accueil</a>
+  <a href="/r/machines" class="{{'active' if '/machines' in request.path else ''}}"><span>▣</span>Machines</a>
+  <details class="quick-create"><summary aria-label="Créer une nouvelle fiche">+</summary>
+    <div class="quick-create-panel">
+    <a href="/r/interventions/new">⚒ Nouvelle intervention</a>
+    <a href="/r/machines/new">▣ Nouvelle machine</a>
+    <a href="/r/tasks/new">☑ Nouvelle tâche</a>
+    <a href="/r/clients/new">♙ Nouveau client</a>
+    <a href="/r/rentals/new">◷ Nouvelle location</a>
+    </div><span>Créer</span></details>
+  <a href="/r/interventions" class="{{'active' if '/interventions' in request.path or request.path=='/planning' else ''}}"><span>⚒</span>Interven.</a>
+  <a href="/r/tasks" class="{{'active' if '/tasks' in request.path else ''}}"><span>☑</span>Tâches</a>
+  <a href="/r/clients" class="{{'active' if '/clients' in request.path else ''}}"><span>♙</span>Clients</a>
 </nav>
 {% endif %}
 </body></html>
