@@ -211,7 +211,7 @@ FIELDS = {
  ("vgp_last", "Dernière VGP", "date", False),("vgp_next", "Prochaine VGP", "date", False),
  ("description", "Description", "textarea", False)],
 "interventions": [
- ("title", "Objet", "text", True), ("client_id", "Client", "foreign:clients", False),
+ ("title", "Objet (facultatif)", "text", False), ("client_id", "Client", "foreign:clients", False),
  ("machine_id", "Machine", "foreign:machines", False),
  ("tech_id", "Technicien", "foreign:users", False),
  ("kind", "Type", "choice:SAV|Livraison|Reprise|VGP|Entretien", False),
@@ -284,6 +284,11 @@ def validate_form(kind):
             vals[col]=datetime.fromisoformat(raw)
         else:
             vals[col]=raw[:5000] if ftype=="textarea" else raw[:255]
+    if kind=="interventions":
+        if not vals.get("title"):
+            if not vals.get("description"):
+                raise ValueError("Renseigne les travaux à effectuer.")
+            vals["title"]=vals["description"][:100].split("\\n")[0].strip() or "Intervention SAV"
     return vals
 
 def label_map(kind):
@@ -415,7 +420,9 @@ def listing(kind):
         if kind=="clients": cols+=["city","contact"]
         where.append("("+" OR ".join("CAST("+col+" AS TEXT) ILIKE %s" for col in cols)+")")
         params.extend(["%"+search+"%"]*len(cols))
-    sql="SELECT * FROM "+kind
+    sql=("SELECT id,ref,brand,model,energy,year,hours,capacity,lift_height,mast,stock_type,status,"
+         "vgp_next,price_sale,price_day,price_month,serial,created_at FROM machines"
+         if kind=="machines" else "SELECT * FROM "+kind)
     if where: sql+=" WHERE "+" AND ".join(where)
     sort_map={
         "machines":{"prix":"price_sale","heures":"hours","annee":"year","capacite":"capacity","nouveaux":"id"},
