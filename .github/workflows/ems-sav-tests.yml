@@ -1,0 +1,27 @@
+name: EMS SAV — tests de stabilité
+on:
+  push:
+    branches: [ems-sav-independant]
+    paths:
+      - "sav_ems/**"
+      - ".github/workflows/ems-sav-tests.yml"
+  workflow_dispatch:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sav_ems
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: sav_ems/requirements.txt
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+      - name: Vérifier la syntaxe
+        run: python -m compileall -q app.py tests
+      - name: Tests sans données clients
+        run: python -m unittest discover -s tests -v
