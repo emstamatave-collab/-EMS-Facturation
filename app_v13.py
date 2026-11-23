@@ -189,9 +189,14 @@ def save_upload(file, prefix):
     return original, stored, (file.mimetype or mimetypes.guess_type(original)[0] or 'application/octet-stream')
 
 # Initialise automatiquement la base, y compris avec Gunicorn/Render.
-restore_from_supabase()
+# La V14/V15 utilise PostgreSQL: ne jamais décompresser ni recharger
+# le vieux ZIP Supabase à chaque démarrage de worker (risque OOM 512 Mo).
+_USE_LEGACY_SQLITE = not os.environ.get("DATABASE_URL", "").strip()
+if _USE_LEGACY_SQLITE:
+    restore_from_supabase()
 init_db()
-backup_to_supabase()
+if _USE_LEGACY_SQLITE:
+    backup_to_supabase()
 
 def money(v): return f"{float(v or 0):,.0f}".replace(',', ' ')
 
