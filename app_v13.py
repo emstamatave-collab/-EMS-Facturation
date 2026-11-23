@@ -122,15 +122,17 @@ def backup_to_supabase():
         headers["Content-Type"] = "application/zip"
         headers["x-upsert"] = "true"
 
-        req = urllib.request.Request(
-            url,
-            data=zip_path.read_bytes(),
-            headers=headers,
-            method="POST"
-        )
-
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            resp.read()
+        # Stream large backup uploads instead of allocating the ZIP in RAM.
+        headers["Content-Length"] = str(zip_path.stat().st_size)
+        with zip_path.open("rb") as archive_stream:
+            req = urllib.request.Request(
+                url,
+                data=archive_stream,
+                headers=headers,
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                resp.read()
 
         print("EMS sauvegarde dans Supabase")
 
