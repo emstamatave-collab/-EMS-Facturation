@@ -245,13 +245,16 @@ else:
 
 
     def restore_files_from_pg():
+        # Stream attachments one at a time to avoid loading every photo
+        # into RAM during startup, especially with a large stock catalogue.
         legacy.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         with psycopg.connect(DATABASE_URL) as con:
-            rows = con.execute("SELECT stored_name, data FROM ems_files").fetchall()
-        for stored_name, data in rows:
-            safe_name = Path(stored_name).name
-            if safe_name:
-                (legacy.UPLOAD_DIR / safe_name).write_bytes(bytes(data))
+            with con.cursor(name="ems_restore_files") as cur:
+                cur.execute("SELECT stored_name, data FROM ems_files")
+                for stored_name, data in cur:
+                    safe_name = Path(stored_name).name
+                    if safe_name:
+                        (legacy.UPLOAD_DIR / safe_name).write_bytes(bytes(data))
 
 
     _legacy_save_upload = legacy.save_upload
