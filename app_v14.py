@@ -244,13 +244,43 @@ else:
                 con.execute(sql)
 
 
+    def _ensure_local_upload(stored_name):
+        # Retrieve stock photos only when requested. Keeping the entire
+        # catalogue out of startup avoids memory spikes on free instances.
+        safe_name = Path(str(stored_name or "")).name
+        if not safe_name:
+            return
+        local_path = legacy.UPLOAD_DIR / safe_name
+        if local_path.exists():
+            return
+        with psycopg.connect(DATABASE_URL) as con:
+            rec = con.execute(
+                "SELECT data FROM ems_files WHERE stored_name=%s",
+                (safe_name,),
+            ).fetchone()
+        if rec:
+            legacy.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(bytes(rec[0]))
+
+    _original_send_from_directory = legacy.send_from_directory
+
+    def _lazy_send_from_directory(directory, path, *args, **kwargs):
+        if Path(directory).resolve() == legacy.UPLOAD_DIR.resolve():
+            _ensure_local_upload(path)
+        return _original_send_from_directory(directory, path, *args, **kwargs)
+
+    legacy.send_from_directory = _lazy_send_from_directory
+
     def restore_files_from_pg():
-        # Stream attachments one at a time to avoid loading every photo
-        # into RAM during startup, especially with a large stock catalogue.
+        # Client/document files are restored, but stock photos are fetched
+        # individually when viewed; they are never loaded en masse at boot.
         legacy.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         with psycopg.connect(DATABASE_URL) as con:
             with con.cursor(name="ems_restore_files") as cur:
-                cur.execute("SELECT stored_name, data FROM ems_files")
+                cur.execute("""SELECT e.stored_name, e.data FROM ems_files e
+                               WHERE NOT EXISTS (
+                                 SELECT 1 FROM stock_items s
+                                 WHERE s.stored_name=e.stored_name)""")
                 for stored_name, data in cur:
                     safe_name = Path(stored_name).name
                     if safe_name:
