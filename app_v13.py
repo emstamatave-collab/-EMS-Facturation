@@ -39,9 +39,13 @@ def restore_from_supabase():
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/latest.zip"
     req = urllib.request.Request(url, headers=supabase_headers(), method="GET")
 
+    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_restore_"))
+    zip_path = temp_dir / "latest.zip"
     try:
+        # Avoid holding the whole (possibly very large) stock ZIP in RAM.
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
+            with zip_path.open("wb") as out:
+                shutil.copyfileobj(resp, out, length=1024*1024)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return
@@ -51,11 +55,7 @@ def restore_from_supabase():
         print("Supabase restore error:", e)
         return
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="ems_supabase_restore_"))
     try:
-        zip_path = temp_dir / "latest.zip"
-        zip_path.write_bytes(data)
-
         extract_dir = temp_dir / "extract"
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(extract_dir)
@@ -195,8 +195,8 @@ _USE_LEGACY_SQLITE = not os.environ.get("DATABASE_URL", "").strip()
 if _USE_LEGACY_SQLITE:
     restore_from_supabase()
 init_db()
-if _USE_LEGACY_SQLITE:
-    backup_to_supabase()
+# Never re-upload the entire archive on each worker startup.
+# Normal successful modification requests still trigger a backup.
 
 def money(v): return f"{float(v or 0):,.0f}".replace(',', ' ')
 
