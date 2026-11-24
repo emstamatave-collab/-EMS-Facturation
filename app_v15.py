@@ -422,7 +422,10 @@ FORM_SCRIPT = """
      row.querySelector('[name="eur_unit_price"]').value=e.target.value.trim();
      fromSavedEuro(row);
    }
-   if(e.target===rate)document.querySelectorAll('.finance-line').forEach(fromSavedEuro);
+   if(e.target===rate)document.querySelectorAll('.finance-line').forEach(function(row){
+     row.querySelector('[name="unit_price"]').setCustomValidity('');
+     fromSavedEuro(row);
+   });
    if(row||e.target===rate)refresh();
  });
  let previousCurrency=cur.value;
