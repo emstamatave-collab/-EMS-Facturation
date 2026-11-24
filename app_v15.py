@@ -25,6 +25,7 @@ def _migrate_v15():
                 "ALTER TABLE docs ADD COLUMN IF NOT EXISTS vat_percent DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS purchase_price DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS tvh_purchase_eur DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE lines ADD COLUMN IF NOT EXISTS eur_unit_price DOUBLE PRECISION DEFAULT NULL",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_ref TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
                 "ALTER TABLE lines ADD COLUMN IF NOT EXISTS internal_note TEXT DEFAULT ''",
@@ -63,6 +64,7 @@ def _migrate_v15():
         legacy.ensure_column(con, 'docs', 'vat_percent', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'purchase_price', "REAL DEFAULT 0")
         legacy.ensure_column(con, 'lines', 'tvh_purchase_eur', "REAL DEFAULT 0")
+        legacy.ensure_column(con, 'lines', 'eur_unit_price', "REAL DEFAULT NULL")
         legacy.ensure_column(con, 'lines', 'supplier_ref', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'supplier_name', "TEXT DEFAULT ''")
         legacy.ensure_column(con, 'lines', 'internal_note', "TEXT DEFAULT ''")
@@ -311,7 +313,7 @@ FINANCE_CSS = """
  .line-table td:nth-child(1):before{content:'Désignation'}
  .line-table td:nth-child(2):before{content:'Quantité'}
  .line-table td:nth-child(3):before{content:'Prix de vente'}
- .line-table td:nth-child(4):before{content:'Conversion'}
+ .line-table td:nth-child(4):before{content:'Prix en € (saisie)'}
  .line-table td:nth-child(5):before{content:'Remise %'}
  .line-table td:nth-child(6):before{content:'Prix achat — interne'}
  .line-table td:nth-child(7):before{content:'Marge — interne'}
@@ -354,6 +356,8 @@ FORM_SCRIPT = """
  const factor=cur.value==='EUR'?1:fx;
  cost.value=(Math.round(euros*factor*100)/100).toString();
  sale.value=(Math.round(euros*k*factor*100)/100).toString();
+ const savedEuro=row.querySelector('[name="eur_unit_price"]');
+ if(savedEuro)savedEuro.value=cur.value==='MGA'?(Math.round(euros*k*100)/100).toString():'';
  }
  function refresh(){
    const c=cur.value==='EUR'?'EUR':'MGA';
@@ -371,7 +375,23 @@ FORM_SCRIPT = """
       sale+=lineSale; buy+=lineBuy;
       let cv=null;
       if(r>0) cv=(c==='EUR')?pu*r:pu/r;
-      row.querySelector('.conversion-field').value=cv===null?'':fmt(cv,alt);
+      const editor=row.querySelector('.conversion-field');
+      const savedEuro=row.querySelector('[name="eur_unit_price"]');
+      if(c==='MGA'){
+        editor.readOnly=false;
+        editor.classList.remove('readonly');
+        editor.placeholder='Saisir le prix en euros';
+        if(document.activeElement!==editor){
+          editor.value=savedEuro.value.trim()?savedEuro.value:(row.querySelector('[name="unit_price"]').value.trim()&&r>0?(Math.round(pu/r*100)/100).toString().replace('.',','):'');
+        }
+        editor.setCustomValidity(savedEuro.value.trim()&&r<=0?'Renseigner le taux EUR vers Ariary.':'');
+      } else {
+        editor.readOnly=true;
+        editor.classList.add('readonly');
+        editor.placeholder='Conversion en Ar';
+        editor.value=cv===null?'':fmt(cv,alt);
+        editor.setCustomValidity('');
+      }
       row.querySelector('.margin-field').value=fmt(lineSale-lineBuy,c);
    });
    const margin=sale-buy;
@@ -386,15 +406,57 @@ FORM_SCRIPT = """
    document.getElementById('sum-converted').textContent=altSale===null?'Taux à renseigner':fmt(altSale,alt);
    document.querySelectorAll('.sale-label').forEach(function(el){el.textContent='P.U. '+(c==='EUR'?'€':'Ar');});
    document.querySelectorAll('.buy-label').forEach(function(el){el.textContent='P.A. '+(c==='EUR'?'€':'Ar')+' — interne';});
-   document.querySelectorAll('.conv-label').forEach(function(el){el.textContent='Équiv. '+(alt==='EUR'?'€':'Ar');});
+   document.querySelectorAll('.conv-label').forEach(function(el){el.textContent=c==='MGA'?'P.U. en € (saisir ici)':'Équiv. Ar';});
+ }
+ function fromSavedEuro(row){
+   const savedEuro=row.querySelector('[name="eur_unit_price"]');
+   if(cur.value==='MGA'&&savedEuro.value.trim()&&n(rate.value)>0){
+     row.querySelector('[name="unit_price"]').value=(Math.round(n(savedEuro.value)*n(rate.value)*100)/100).toString();
+   }
  }
  document.addEventListener('input',function(e){
    const row=e.target.closest('.finance-line');
    if(row&&e.target.name==='tvh_purchase_eur')suggestTVH(row);
-   if(e.target===rate)document.querySelectorAll('.finance-line').forEach(suggestTVH);
+   if(row&&e.target.name==='unit_price')row.querySelector('[name="eur_unit_price"]').value='';
+   if(row&&e.target.classList.contains('conversion-field')&&cur.value==='MGA'){
+     row.querySelector('[name="eur_unit_price"]').value=e.target.value.trim();
+     fromSavedEuro(row);
+   }
+   if(e.target===rate)document.querySelectorAll('.finance-line').forEach(fromSavedEuro);
    if(row||e.target===rate)refresh();
  });
- cur.addEventListener('change',function(){document.querySelectorAll('.finance-line').forEach(suggestTVH);refresh();});
+ let previousCurrency=cur.value;
+ cur.addEventListener('change',function(){
+   const nextCurrency=cur.value, r=n(rate.value);
+   const rows=document.querySelectorAll('.finance-line');
+   let populated=false;
+   rows.forEach(function(row){
+     if(row.querySelector('[name="unit_price"]').value.trim()||row.querySelector('[name="purchase_price"]').value.trim())populated=true;
+   });
+   if(previousCurrency!==nextCurrency&&populated&&r<=0){
+     cur.value=previousCurrency;
+     alert('Renseigner le taux de change avant de changer la devise du devis.');
+     rate.focus(); return;
+   }
+   if(previousCurrency!==nextCurrency){
+     rows.forEach(function(row){
+       const pu=row.querySelector('[name="unit_price"]'), pa=row.querySelector('[name="purchase_price"]');
+       const savedEuro=row.querySelector('[name="eur_unit_price"]');
+       const hasPU=pu.value.trim(),hasPA=pa.value.trim();
+       if(previousCurrency==='EUR'&&nextCurrency==='MGA'){
+         savedEuro.value=hasPU?pu.value:'';
+         if(hasPU)pu.value=(Math.round(n(pu.value)*r*100)/100).toString();
+         if(hasPA)pa.value=(Math.round(n(pa.value)*r*100)/100).toString();
+       }else if(previousCurrency==='MGA'&&nextCurrency==='EUR'){
+         if(hasPU)pu.value=(Math.round((savedEuro.value.trim()?n(savedEuro.value):n(pu.value)/r)*100)/100).toString();
+         if(hasPA)pa.value=(Math.round(n(pa.value)/r*100)/100).toString();
+         savedEuro.value='';
+       }
+     });
+   }
+   previousCurrency=nextCurrency;
+   refresh();
+ });
  refresh();
 })();
 </script>
@@ -415,11 +477,13 @@ def _line_row(line=None):
     unit_value = '' if not desc and unit == 0 else f"{unit:g}"
     purchase_value = '' if not desc and purchase == 0 else f"{purchase:g}"
     tvh_value = '' if tvh_eur == 0 else f"{tvh_eur:g}"
+    saved_eur = _row_get(line, 'eur_unit_price', None)
+    eur_value = '' if saved_eur is None else f"{float(saved_eur):g}"
     return f"""<tr class="finance-line">
 <td><textarea name="description" style="min-width:260px" placeholder="Désignation client">{desc}</textarea></td>
 <td><input class="linefield qtyfield" name="qty" type="text" inputmode="decimal" autocomplete="off" value="{qty:g}"></td>
 <td><input class="linefield pricefield" name="unit_price" type="text" inputmode="decimal" autocomplete="off" value="{unit_value}" placeholder="Prix de vente"></td>
-<td><input class="conversion-field readonly" type="text" readonly tabindex="-1"></td>
+<td><input class="conversion-field" type="text" inputmode="decimal" autocomplete="off" placeholder="Saisir le prix en euros"><input type="hidden" name="eur_unit_price" value="{eur_value}"></td>
 <td><input name="discount_pct" type="text" inputmode="decimal" autocomplete="off" value="{disc:g}"></td>
 <td><input name="tvh_purchase_eur" type="text" inputmode="decimal" placeholder="Achat TVH €" aria-label="Achat TVH euros" value="{tvh_value}"><input name="purchase_price" type="text" inputmode="decimal" autocomplete="off" value="{purchase_value}" placeholder="Prix d'achat"></td>
 <td><input class="margin-field readonly" type="text" readonly tabindex="-1"></td>
@@ -466,7 +530,7 @@ def _document_form(d, clients, lines, is_new):
 <div><label>Numéro</label><input name="number" value="{number_value}"{number_placeholder}></div>
 {status_field}
 <div><label>Client</label><select name="client_id"><option value="">-- Choisir --</option>{opts}</select></div>
-<div><label>Devise</label><select name="currency"><option value="MGA" {'selected' if currency=='MGA' else ''}>Ariary (Ar)</option><option value="EUR" {'selected' if currency=='EUR' else ''}>Euro (€)</option></select></div>
+<div><label>Devise du devis client</label><select name="currency"><option value="MGA" {'selected' if currency=='MGA' else ''}>Ariary (Ar)</option><option value="EUR" {'selected' if currency=='EUR' else ''}>Euro (€)</option></select></div>
 <div><label>TVA (%)</label><input name="vat_percent" type="text" inputmode="decimal" value="{float(dg('vat_percent',0) or 0):g}" placeholder="Ex. 20"></div>
 <div><label>Date</label><input type="date" name="doc_date" value="{esc(doc_date)}"></div>
 <div><label>Échéance</label><input type="date" name="due_date" value="{esc(due_date)}"></div>
@@ -477,6 +541,7 @@ def _document_form(d, clients, lines, is_new):
 
 <div class="fxbox">
 <h3 style="margin-top:0">Devise et conversion</h3>
+<div class="small muted" style="margin-bottom:10px">Pour un devis client en Ariary : choisis Ariary, indique le taux (1 € = ... Ar), puis remplis la colonne « P.U. en € ». Le P.U. en Ariary se calcule automatiquement. Le PDF reste en Ariary tant que la conversion client n'est pas cochée.</div>
 <div class="grid3">
 <div><label>Taux utilisé</label><input name="fx_rate" type="text" inputmode="decimal" value="{fx_rate:g}" placeholder="Ex. 5000"><span class="small muted">1 € = ce montant en Ar. Ce taux reste figé dans ce document.</span></div>
 <div><label>Conversion totale interne</label><input id="sum-converted" class="readonly" readonly tabindex="-1"></div>
@@ -512,6 +577,9 @@ def _save_lines(con, doc_id):
     discounts = request.form.getlist('discount_pct')
     purchases = request.form.getlist('purchase_price')
     tvh_purchases = request.form.getlist('tvh_purchase_eur')
+    eur_prices = request.form.getlist('eur_unit_price')
+    input_currency = _currency(request.form.get('currency'))
+    input_rate = max(0, legacy.parse_decimal(request.form.get('fx_rate'), 0))
     mms_refs = request.form.getlist('mms_ref')
     supplier_refs = request.form.getlist('supplier_ref')
     supplier_names = request.form.getlist('supplier_name')
@@ -524,6 +592,11 @@ def _save_lines(con, doc_id):
         disc = discounts[i] if i < len(discounts) else '0'
         purchase = purchases[i] if i < len(purchases) else '0'
         tvh_purchase = tvh_purchases[i] if i < len(tvh_purchases) else '0'
+        eur_raw = eur_prices[i].strip() if i < len(eur_prices) else ''
+        eur_manual = legacy.parse_decimal(eur_raw, 0) if eur_raw and input_currency == 'MGA' else None
+        if eur_manual is not None and input_rate <= 0:
+            raise ValueError("Renseigner le taux EUR vers Ariary.")
+        price_in_doc_currency = eur_manual * input_rate if eur_manual is not None else legacy.parse_decimal(p, 0)
         mms_ref=(mms_refs[i] if i < len(mms_refs) else '').strip().upper()
         if not mms_ref:
             mms_ref=_extract_mms_ref(description)
@@ -537,12 +610,12 @@ def _save_lines(con, doc_id):
                 supplier_ref=auto_ref
         internal_note = internal_notes[i] if i < len(internal_notes) else ''
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?,?,?)""",
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note,eur_unit_price)
+               values(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                doc_id, description, legacy.parse_decimal(q,1), legacy.parse_decimal(p,0),
+                doc_id, description, legacy.parse_decimal(q,1), price_in_doc_currency,
                 max(0,min(100,legacy.parse_decimal(disc,0))), max(0,legacy.parse_decimal(purchase,0)), max(0,legacy.parse_decimal(tvh_purchase,0)),
-                mms_ref, supplier_ref, supplier_name, internal_note
+                mms_ref, supplier_ref, supplier_name, internal_note, eur_manual
             )
         )
 
@@ -774,9 +847,9 @@ def convert_v15(doc_id):
     new_id=cur.lastrowid
     for l in con.execute('select * from lines where doc_id=?',(doc_id,)).fetchall():
         con.execute(
-            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note)
-               values(?,?,?,?,?,?,?,?,?,?,?)""",
-            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['tvh_purchase_eur'],l['mms_ref'],l['supplier_ref'],l['supplier_name'],l['internal_note'])
+            """insert into lines(doc_id,description,qty,unit_price,discount_pct,purchase_price,tvh_purchase_eur,mms_ref,supplier_ref,supplier_name,internal_note,eur_unit_price)
+               values(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_id,l['description'],l['qty'],l['unit_price'],l['discount_pct'],l['purchase_price'],l['tvh_purchase_eur'],l['mms_ref'],l['supplier_ref'],l['supplier_name'],l['internal_note'],l['eur_unit_price'])
         )
     for im in con.execute('select * from doc_images where doc_id=?',(doc_id,)).fetchall():
         con.execute('insert into doc_images(doc_id,original_name,stored_name,mime) values(?,?,?,?)',(new_id,im['original_name'],im['stored_name'],im['mime']))
