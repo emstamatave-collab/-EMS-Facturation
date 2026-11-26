@@ -983,10 +983,10 @@ def pdf_v15(doc_id):
     footer_lines=[]
     for field in (f"Devis : {'-' if d['kind']=='Devis' else ''}",f"Bon de commande : {d['po_number'] or ''}",f"Modalité du règlement : {d['payment_terms'] or ''}",f"Date et lieu de livraison : {d['delivery'] or ''}"):
         footer_lines.extend(wrapped(field,R-L-8*mm,'Helvetica-Bold',8.5))
-    footer_height=(13+4.5*len(footer_lines)+25)*mm
+    footer_height=(42+4.5*len(footer_lines))*mm
     summary_height=(29+(14 if show_conversion and alt_total is not None else 0)+5+4.2*len(amount_lines))*mm
     fresh_height=H-34*mm-bottom
-    compact_finish=summary_height+footer_height+(6+4.2*len(note_lines))*mm
+    compact_finish=summary_height+footer_height+((7+4.2*len(note_lines))*mm if note_lines else 0)
     reserve=summary_height
     if compact_finish<fresh_height-25*mm:
         reserve=compact_finish
@@ -1022,15 +1022,15 @@ def pdf_v15(doc_id):
     if y-summary_height<bottom:
         y=new_content_page()
     y-=1*mm
-    c.setFont('Helvetica-Bold',9); c.drawString(103*mm,y-4.5*mm,'TOTAL HT'); c.drawRightString(R-2*mm,y-4.5*mm,_number(ht,currency)); y-=6*mm
-    c.setFont('Helvetica',9); c.drawString(103*mm,y-4.5*mm,f'TVA {vat_percent:g} %'); c.drawRightString(R-2*mm,y-4.5*mm,_number(vat_amount,currency)); y-=6*mm
+    c.setFont('Helvetica-Bold',9); c.drawString(103*mm,y-4.5*mm,'TOTAL HT'); fitted(_number(ht,currency),R-2*mm,y-4.5*mm,41*mm,'Helvetica-Bold',9,right=True); y-=6*mm
+    c.setFont('Helvetica',9); c.drawString(103*mm,y-4.5*mm,f'TVA {vat_percent:g} %'); fitted(_number(vat_amount,currency),R-2*mm,y-4.5*mm,41*mm,'Helvetica',9,right=True); y-=6*mm
     c.setFillColorRGB(.68,.66,.66); c.rect(100*mm,y-8*mm,R-100*mm,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
-    c.setFont('Helvetica-Bold',9.5); c.drawString(103*mm,y-5.5*mm,'TOTAL TTC en '+('euros' if currency=='EUR' else 'Ariary')); c.drawRightString(R-2*mm,y-5.5*mm,_number(total,currency))
+    c.setFont('Helvetica-Bold',9.5); c.drawString(103*mm,y-5.5*mm,'TOTAL TTC en '+('euros' if currency=='EUR' else 'Ariary')); fitted(_number(total,currency),R-2*mm,y-5.5*mm,41*mm,'Helvetica-Bold',9.5,right=True)
     y-=11*mm
     if show_conversion and alt_total is not None:
         c.setFont('Helvetica-Bold',9)
         c.drawString(103*mm,y-4*mm,'Équivalent '+('Ariary' if alt_currency=='MGA' else 'euros'))
-        c.drawRightString(R-2*mm,y-4*mm,_number(alt_total,alt_currency))
+        fitted(_number(alt_total,alt_currency),R-2*mm,y-4*mm,41*mm,'Helvetica-Bold',9,right=True)
         y-=6*mm
         c.setFont('Helvetica',8)
         c.drawRightString(R-2*mm,y-3*mm,f"Taux utilisé : 1 EUR = {_number(rate,'MGA')} Ar")
@@ -1078,7 +1078,7 @@ def pdf_v15(doc_id):
         offset+=len(chunk)
         if offset<len(footer_lines):
             y=new_content_page()
-    if y-25*mm<bottom:
+    if y-27*mm<bottom:
         y=new_content_page()
     y-=3*mm
     c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y-3*mm,'Coordonnées bancaires de la société :')
@@ -1099,9 +1099,9 @@ def pdf_v15(doc_id):
             path=legacy.UPLOAD_DIR/im['stored_name']
             try:
                 c.drawImage(ImageReader(str(path)),px,py-cellh,width=cellw,height=cellh,preserveAspectRatio=True,anchor='c',mask='auto')
-                c.setFont('Helvetica',7); c.drawString(px,py-cellh-4*mm,(im['original_name'] or '')[:45])
+                fitted(im['original_name'] or '',px,py-cellh-4*mm,cellw,'Helvetica',7)
             except Exception:
-                c.setFont('Helvetica',8); c.drawString(px,py-8*mm,'Photo non compatible avec le PDF : '+(im['original_name'] or ''))
+                fitted('Photo non compatible avec le PDF : '+(im['original_name'] or ''),px,py-8*mm,cellw,'Helvetica',8)
             col+=1
             if col%2==0: px=L; py-=78*mm
             else: px=L+94*mm
