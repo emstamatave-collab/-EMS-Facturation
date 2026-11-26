@@ -882,13 +882,56 @@ def pdf_v15(doc_id):
     out=legacy.DATA_DIR/f"{d['kind']}_{safe}.pdf"
     c=canvas.Canvas(str(out),pagesize=A4)
     W,H=A4; L=14*mm; R=W-14*mm; y=H-12*mm
+    bottom=18*mm
+
+    def wrapped(text, width, font='Helvetica', size=8.5):
+        """Measure actual glyph widths, including unbroken references."""
+        result=[]
+        for paragraph in str(text or '').split('\n'):
+            line=''
+            for word in paragraph.split():
+                candidate=(line+' '+word).strip()
+                if c.stringWidth(candidate,font,size)<=width:
+                    line=candidate
+                    continue
+                if line:
+                    result.append(line)
+                    line=''
+                while c.stringWidth(word,font,size)>width:
+                    n=1
+                    while n<len(word) and c.stringWidth(word[:n+1],font,size)<=width:
+                        n+=1
+                    result.append(word[:n])
+                    word=word[n:]
+                line=word
+            result.append(line)
+        return result or ['']
+
+    def fitted(text, x, baseline, width, font='Helvetica', size=8.2, right=False):
+        text=str(text or '')
+        measured=c.stringWidth(text,font,size)
+        if measured>width:
+            size*=width/measured
+        c.setFont(font,size)
+        (c.drawRightString if right else c.drawString)(x,baseline,text)
+
+    def finish_page():
+        c.setFillColorRGB(0,0,0)
+        c.setFont('Helvetica',8)
+        c.drawCentredString(W/2,13*mm,f"Page {c.getPageNumber()}")
+        c.showPage()
+
     c.setStrokeColorRGB(.15,.15,.15); c.rect(10*mm,10*mm,W-20*mm,H-20*mm)
     if legacy.LOGO.exists():
         c.drawImage(ImageReader(str(legacy.LOGO)),L,y-20*mm,width=62*mm,height=18.5*mm,preserveAspectRatio=True,mask='auto')
-    c.setFont('Helvetica-Bold',12); c.drawString(116*mm,y-5*mm,f"{legacy.COMPANY['name']} {d['kind'].upper()} {d['number']}")
+    fitted(f"{legacy.COMPANY['name']} {d['kind'].upper()} {d['number']}",116*mm,y-5*mm,R-116*mm,'Helvetica-Bold',12)
     c.setFont('Helvetica-Bold',9); c.drawString(116*mm,y-11*mm,f"Date : {d['doc_date'] or ''}"); c.drawString(116*mm,y-16*mm,f"Échéance : {d['due_date'] or ''}")
     y-=27*mm; c.setFillColorRGB(.68,.66,.66); c.rect(L,y,R-L,6*mm,fill=1,stroke=0); c.setFillColorRGB(0,0,0); c.setFont('Helvetica-Bold',9.5); c.drawString(L+2*mm,y+1.7*mm,'Émetteur :'); c.drawString(100*mm,y+1.7*mm,'Adresse de facturation :'); y-=2*mm
-    boxh=38*mm; c.rect(L,y-boxh,R-L,boxh,fill=0,stroke=1); c.line(98*mm,y,98*mm,y-boxh)
+    client_rows=[]
+    for value,font,size in [(d['client'] or '','Helvetica-Bold',10),(d['address'] or '','Helvetica',8.5),(f"NIF : {d['nif'] or ''}",'Helvetica',8.5),(f"STAT : {d['stat'] or ''}",'Helvetica',8.5)]:
+        client_rows.extend((line,font,size) for line in wrapped(value,R-102*mm,font,size))
+    boxh=max(38*mm,(9+4.5*len(client_rows))*mm)
+    c.rect(L,y-boxh,R-L,boxh,fill=0,stroke=1); c.line(98*mm,y,98*mm,y-boxh)
     c.setFont('Helvetica-Bold',10); c.drawString(L+2*mm,y-5*mm,legacy.COMPANY['name']); c.setFont('Helvetica',8.5); yy=y-10*mm
     for ln in legacy.COMPANY['address'].split('\n'):
         c.drawString(L+2*mm,yy,ln); yy-=4.5*mm
@@ -896,25 +939,30 @@ def pdf_v15(doc_id):
     c.drawString(L+2*mm,yy,f"STAT : {legacy.COMPANY['stat']}"); yy-=4.5*mm
     c.drawString(L+2*mm,yy,f"Mail : {legacy.COMPANY['email']}"); yy-=4.5*mm
     c.drawString(L+2*mm,yy,f"Tél : {legacy.COMPANY['phone']}")
-    xx=100*mm; yy=y-5*mm; c.setFont('Helvetica-Bold',10); c.drawString(xx,yy,d['client'] or ''); yy-=5*mm; c.setFont('Helvetica',8.5)
-    for ln in (d['address'] or '').split('\n'):
-        c.drawString(xx,yy,ln); yy-=4.5*mm
-    yy-=2*mm; c.drawString(xx,yy,f"NIF : {d['nif'] or ''}"); yy-=4.5*mm; c.drawString(xx,yy,f"STAT : {d['stat'] or ''}")
-    y-=boxh+9*mm; c.setFont('Helvetica-Bold',10); y=legacy.draw_wrapped(c,'REF : '+(d['reference'] or ''),L,y,R-L,'Helvetica-Bold',10,5*mm,2); y-=4*mm
+    xx=100*mm; yy=y-5*mm
+    for line,font,size in client_rows:
+        c.setFont(font,size); c.drawString(xx,yy,line); yy-=4.5*mm
+    y-=boxh+8*mm
 
     x1=L; x2=88*mm; x3=112*mm; x4=140*mm; x5=158*mm; x6=R
 
     def new_content_page():
         """Continue the document without drawing over the page border."""
-        c.showPage()
+        finish_page()
         c.setStrokeColorRGB(.15,.15,.15)
         c.setFillColorRGB(0,0,0)
         c.rect(10*mm,10*mm,W-20*mm,H-20*mm)
-        c.setFont('Helvetica-Bold',12)
-        c.drawString(L,H-20*mm,f"{legacy.COMPANY['name']} {d['kind'].upper()} {d['number']} - suite")
-        c.setFont('Helvetica',9)
-        c.drawString(L,H-26*mm,d['client'] or '')
+        fitted(f"{legacy.COMPANY['name']} {d['kind'].upper()} {d['number']} - suite",L,H-20*mm,R-L,'Helvetica-Bold',12)
+        fitted(d['client'] or '',L,H-26*mm,R-L,'Helvetica',9)
         return H-34*mm
+
+    for ref_line in wrapped('REF : '+(d['reference'] or ''),R-L,'Helvetica-Bold',10):
+        if y<bottom+5*mm:
+            y=new_content_page()
+        c.setFont('Helvetica-Bold',10)
+        c.drawString(L,y,ref_line)
+        y-=4.5*mm
+    y-=3*mm
 
     def table_header(top):
         c.setFillColorRGB(.68,.66,.66); c.rect(x1,top-8*mm,x6-x1,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
@@ -929,28 +977,49 @@ def pdf_v15(doc_id):
         c.setFont('Helvetica',8.2)
         return top-8*mm
 
-    # Footer starts at 90 mm. Reserve space for all totals, optional currency
-    # conversion, amount in words and a few notes on the final content page.
-    note_lines=(d['notes'] or '').strip().splitlines()
-    summary_min_y=(142+(12+5*min(len(note_lines),3) if note_lines else 0))*mm
-    y=table_header(y)
-    for i,l in enumerate(lines):
-        h=8*mm
-        remaining=len(lines)-i
-        # Keep the last few rows with the totals whenever a page break is needed.
-        if y-h<18*mm or (remaining<=3 and y-remaining*h<summary_min_y):
+    # Keep totals and final rows together, using actual wrapped row heights.
+    note_lines=wrapped(d['notes'],R-L-8*mm,'Helvetica',9) if (d['notes'] or '').strip() else []
+    amount_lines=wrapped(_amount_words(total,currency)+'.',R-L-8*mm,'Helvetica',9)
+    footer_lines=[]
+    for field in (f"Devis : {'-' if d['kind']=='Devis' else ''}",f"Bon de commande : {d['po_number'] or ''}",f"Modalité du règlement : {d['payment_terms'] or ''}",f"Date et lieu de livraison : {d['delivery'] or ''}"):
+        footer_lines.extend(wrapped(field,R-L-8*mm,'Helvetica-Bold',8.5))
+    footer_height=(13+4.5*len(footer_lines)+25)*mm
+    summary_height=(29+(14 if show_conversion and alt_total is not None else 0)+5+4.2*len(amount_lines))*mm
+    fresh_height=H-34*mm-bottom
+    compact_finish=summary_height+footer_height+(6+4.2*len(note_lines))*mm
+    reserve=summary_height
+    if compact_finish<fresh_height-25*mm:
+        reserve=compact_finish
+
+    # Split exceptionally long descriptions into continuation rows.
+    rows=[]
+    for line in lines:
+        parts=wrapped(line['description'],x2-x1-4*mm,'Helvetica',8.2)
+        for k in range(0,len(parts),40):
+            chunk=parts[k:k+40]
+            rows.append((line,chunk,k==0,max(6.5*mm,(3+3.7*len(chunk))*mm)))
+    if rows:
+        if y<bottom+15*mm:
+            y=new_content_page()
+        y=table_header(y)
+    for i,(l,parts,first,h) in enumerate(rows):
+        remaining=len(rows)-i
+        tail_height=sum(row[3] for row in rows[i:]) if remaining<=3 else 0
+        if y-h<bottom or (remaining<=3 and y-tail_height-reserve<bottom and tail_height+reserve<=fresh_height-8*mm):
             y=table_header(new_content_page())
         c.rect(x1,y-h,x6-x1,h,fill=0,stroke=1)
-        [c.line(x,y,x,y-h) for x in [x2,x3,x4,x5]]
-        c.drawString(x1+2*mm,y-5.2*mm,(l['description'] or '')[:45])
-        c.drawRightString(x3-2*mm,y-5.2*mm,f"{l['qty']:g}")
-        c.drawRightString(x4-2*mm,y-5.2*mm,_number(l['unit_price'],currency))
-        c.drawRightString(x5-2*mm,y-5.2*mm,f"{float(l['discount_pct'] or 0):g}%")
-        net=l['qty']*l['unit_price']*(1-float(l['discount_pct'] or 0)/100)
-        c.drawRightString(x6-2*mm,y-5.2*mm,_number(net,currency))
+        for x in (x2,x3,x4,x5):
+            c.line(x,y,x,y-h)
+        c.setFont('Helvetica',8.2)
+        for j,part in enumerate(parts):
+            c.drawString(x1+2*mm,y-(4.4+3.7*j)*mm,part)
+        if first:
+            net=l['qty']*l['unit_price']*(1-float(l['discount_pct'] or 0)/100)
+            for value,left,right in [(f"{l['qty']:g}",x2,x3),(_number(l['unit_price'],currency),x3,x4),(f"{float(l['discount_pct'] or 0):g}%",x4,x5),(_number(net,currency),x5,x6)]:
+                fitted(value,right-2*mm,y-4.4*mm,right-left-4*mm,right=True)
         y-=h
 
-    if y<summary_min_y:
+    if y-summary_height<bottom:
         y=new_content_page()
     y-=1*mm
     c.setFont('Helvetica-Bold',9); c.drawString(103*mm,y-4.5*mm,'TOTAL HT'); c.drawRightString(R-2*mm,y-4.5*mm,_number(ht,currency)); y-=6*mm
@@ -967,46 +1036,66 @@ def pdf_v15(doc_id):
         c.drawRightString(R-2*mm,y-3*mm,f"Taux utilisé : 1 EUR = {_number(rate,'MGA')} Ar")
         y-=8*mm
     else:
-        y-=12*mm
+        y-=4*mm
 
-    c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Arrêté à la somme de :'); c.setFont('Helvetica',9); c.drawString(L+44*mm,y,_amount_words(total,currency)+'.')
+    c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y,'Arrêté à la somme de :')
+    y-=5*mm
+    for part in amount_lines:
+        if y<bottom:
+            y=new_content_page()
+        c.setFont('Helvetica',9); c.drawString(L+4*mm,y,part); y-=4.2*mm
     if note_lines:
-        if y-12*mm<98*mm:
+        if y<bottom+11*mm:
             y=new_content_page()
         else:
-            y-=7*mm
-        c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Notes :'); y-=5*mm; c.setFont('Helvetica',9)
-        for note_line in note_lines:
-            if y<98*mm:
+            y-=2*mm
+        c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y,'Notes :'); y-=5*mm
+        for part in note_lines:
+            if y<bottom:
                 y=new_content_page()
-                c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Notes (suite) :')
-                y-=5*mm; c.setFont('Helvetica',9)
-            c.drawString(L+5*mm,y,note_line[:100]); y-=5*mm
+                c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y,'Notes (suite) :'); y-=5*mm
+            c.setFont('Helvetica',9); c.drawString(L+4*mm,y,part); y-=4.2*mm
 
-    # The final footer is kept below all content, never over the totals.
-    by=50*mm
-    c.setFillColorRGB(.7,.69,.69); c.rect(L,by,R-L,40*mm,fill=1,stroke=0)
-    c.setFillColorRGB(.45,.43,.43); c.rect(L+2*mm,by+32*mm,R-L-4*mm,7*mm,fill=1,stroke=0)
-    c.setFillColorRGB(0,0,0); c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,by+34*mm,'RÉFÉRENCE :')
-    c.setFont('Helvetica-Bold',8.5)
-    c.drawString(L+4*mm,by+25*mm,f"Devis : {'-' if d['kind']=='Devis' else ''}")
-    c.drawString(L+4*mm,by+19*mm,f"Bon de commande : {d['po_number'] or ''}")
-    c.drawString(L+4*mm,by+13*mm,f"Modalité du règlement : {d['payment_terms'] or ''}")
-    c.drawString(L+4*mm,by+7*mm,f"Date et lieu de livraison : {d['delivery'] or ''}")
-    c.setFont('Helvetica-Bold',9); c.drawString(L+10*mm,41*mm,'Coordonnées bancaires de la société :')
-    c.setFillColorRGB(.78,.77,.77); c.rect(L,19*mm,R-L,18*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
-    c.setFont('Helvetica',8.5); c.drawString(L+2*mm,32*mm,f"Banque : {legacy.COMPANY['bank']}")
+    # Reference and bank blocks follow the content; neither covers the totals.
+    if footer_height<=fresh_height and y-footer_height<bottom:
+        y=new_content_page()
+    y-=3*mm
+    offset=0
+    while offset<len(footer_lines):
+        capacity=int((y-bottom-13*mm)/(4.5*mm))
+        if capacity<1:
+            y=new_content_page()
+            continue
+        chunk=footer_lines[offset:offset+capacity]
+        blockh=(12+4.5*len(chunk))*mm
+        c.setFillColorRGB(.7,.69,.69); c.rect(L,y-blockh,R-L,blockh,fill=1,stroke=0)
+        c.setFillColorRGB(.45,.43,.43); c.rect(L+2*mm,y-8*mm,R-L-4*mm,7*mm,fill=1,stroke=0)
+        c.setFillColorRGB(0,0,0); c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y-6*mm,'RÉFÉRENCE :' if offset==0 else 'RÉFÉRENCE (suite) :')
+        c.setFont('Helvetica-Bold',8.5)
+        for j,part in enumerate(chunk):
+            c.drawString(L+4*mm,y-(12+4.5*j)*mm,part)
+        y-=blockh
+        offset+=len(chunk)
+        if offset<len(footer_lines):
+            y=new_content_page()
+    if y-25*mm<bottom:
+        y=new_content_page()
+    y-=3*mm
+    c.setFont('Helvetica-Bold',9); c.drawString(L+4*mm,y-3*mm,'Coordonnées bancaires de la société :')
+    by=y-24*mm
+    c.setFillColorRGB(.78,.77,.77); c.rect(L,by,R-L,18*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
+    fitted(f"Banque : {legacy.COMPANY['bank']}",L+2*mm,by+13*mm,R-L-4*mm,'Helvetica',8.5)
     c.setFont('Helvetica-Bold',8)
     heads=['Code banque','Code guichet','N° de compte','Clé']
     vals=[legacy.COMPANY['bank_code'],legacy.COMPANY['branch_code'],legacy.COMPANY['account'],legacy.COMPANY['key']]
     xs=[L+30*mm,L+72*mm,L+120*mm,L+164*mm]
     for i,h in enumerate(heads):
-        c.drawCentredString(xs[i],26*mm,h); c.setFont('Helvetica',8); c.drawCentredString(xs[i],21.5*mm,vals[i]); c.setFont('Helvetica-Bold',8)
+        c.drawCentredString(xs[i],by+7*mm,h); c.setFont('Helvetica',8); c.drawCentredString(xs[i],by+2.5*mm,vals[i]); c.setFont('Helvetica-Bold',8)
 
     if images:
-        c.showPage(); c.setFont('Helvetica-Bold',14); c.drawString(L,H-18*mm,f"Photos — {d['kind']} {d['number']}")
+        finish_page(); c.setFont('Helvetica-Bold',14); c.drawString(L,H-18*mm,f"Photos — {d['kind']} {d['number']}")
         px=L; py=H-32*mm; cellw=84*mm; cellh=62*mm; col=0
-        for im in images:
+        for photo_index,im in enumerate(images):
             path=legacy.UPLOAD_DIR/im['stored_name']
             try:
                 c.drawImage(ImageReader(str(path)),px,py-cellh,width=cellw,height=cellh,preserveAspectRatio=True,anchor='c',mask='auto')
@@ -1016,10 +1105,10 @@ def pdf_v15(doc_id):
             col+=1
             if col%2==0: px=L; py-=78*mm
             else: px=L+94*mm
-            if py<70*mm and col%2==0:
-                c.showPage(); c.setFont('Helvetica-Bold',14); c.drawString(L,H-18*mm,'Photos (suite)'); px=L; py=H-32*mm
+            if py<70*mm and col%2==0 and photo_index+1<len(images):
+                finish_page(); c.setFont('Helvetica-Bold',14); c.drawString(L,H-18*mm,'Photos (suite)'); px=L; py=H-32*mm
 
-    c.showPage(); c.save()
+    finish_page(); c.save()
     return send_file(out,as_attachment=True,download_name=out.name)
 
 
