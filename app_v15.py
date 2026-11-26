@@ -903,17 +903,43 @@ def pdf_v15(doc_id):
     y-=boxh+9*mm; c.setFont('Helvetica-Bold',10); y=legacy.draw_wrapped(c,'REF : '+(d['reference'] or ''),L,y,R-L,'Helvetica-Bold',10,5*mm,2); y-=4*mm
 
     x1=L; x2=88*mm; x3=112*mm; x4=140*mm; x5=158*mm; x6=R
-    c.setFillColorRGB(.68,.66,.66); c.rect(x1,y-8*mm,x6-x1,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
-    [c.line(x,y,x,y-8*mm) for x in [x2,x3,x4,x5]]
-    c.setFont('Helvetica-Bold',8.2)
-    c.drawCentredString((x1+x2)/2,y-5.5*mm,'DÉSIGNATION')
-    c.drawCentredString((x2+x3)/2,y-5.5*mm,'QTS')
-    c.drawCentredString((x3+x4)/2,y-5.5*mm,'P.U. '+_pdf_code(currency))
-    c.drawCentredString((x4+x5)/2,y-5.5*mm,'REM.')
-    c.drawCentredString((x5+x6)/2,y-5.5*mm,'TOTAL '+_pdf_code(currency))
-    y-=8*mm; c.setFont('Helvetica',8.2)
-    for l in lines:
+
+    def new_content_page():
+        """Continue the document without drawing over the page border."""
+        c.showPage()
+        c.setStrokeColorRGB(.15,.15,.15)
+        c.setFillColorRGB(0,0,0)
+        c.rect(10*mm,10*mm,W-20*mm,H-20*mm)
+        c.setFont('Helvetica-Bold',12)
+        c.drawString(L,H-20*mm,f"{legacy.COMPANY['name']} {d['kind'].upper()} {d['number']} - suite")
+        c.setFont('Helvetica',9)
+        c.drawString(L,H-26*mm,d['client'] or '')
+        return H-34*mm
+
+    def table_header(top):
+        c.setFillColorRGB(.68,.66,.66); c.rect(x1,top-8*mm,x6-x1,8*mm,fill=1,stroke=1); c.setFillColorRGB(0,0,0)
+        for x in (x2,x3,x4,x5):
+            c.line(x,top,x,top-8*mm)
+        c.setFont('Helvetica-Bold',8.2)
+        c.drawCentredString((x1+x2)/2,top-5.5*mm,'DÉSIGNATION')
+        c.drawCentredString((x2+x3)/2,top-5.5*mm,'QTS')
+        c.drawCentredString((x3+x4)/2,top-5.5*mm,'P.U. '+_pdf_code(currency))
+        c.drawCentredString((x4+x5)/2,top-5.5*mm,'REM.')
+        c.drawCentredString((x5+x6)/2,top-5.5*mm,'TOTAL '+_pdf_code(currency))
+        c.setFont('Helvetica',8.2)
+        return top-8*mm
+
+    # Footer starts at 90 mm. Reserve space for all totals, optional currency
+    # conversion, amount in words and a few notes on the final content page.
+    note_lines=(d['notes'] or '').strip().splitlines()
+    summary_min_y=(142+(12+5*min(len(note_lines),3) if note_lines else 0))*mm
+    y=table_header(y)
+    for i,l in enumerate(lines):
         h=8*mm
+        remaining=len(lines)-i
+        # Keep the last few rows with the totals whenever a page break is needed.
+        if y-h<18*mm or (remaining<=3 and y-remaining*h<summary_min_y):
+            y=table_header(new_content_page())
         c.rect(x1,y-h,x6-x1,h,fill=0,stroke=1)
         [c.line(x,y,x,y-h) for x in [x2,x3,x4,x5]]
         c.drawString(x1+2*mm,y-5.2*mm,(l['description'] or '')[:45])
@@ -924,6 +950,8 @@ def pdf_v15(doc_id):
         c.drawRightString(x6-2*mm,y-5.2*mm,_number(net,currency))
         y-=h
 
+    if y<summary_min_y:
+        y=new_content_page()
     y-=1*mm
     c.setFont('Helvetica-Bold',9); c.drawString(103*mm,y-4.5*mm,'TOTAL HT'); c.drawRightString(R-2*mm,y-4.5*mm,_number(ht,currency)); y-=6*mm
     c.setFont('Helvetica',9); c.drawString(103*mm,y-4.5*mm,f'TVA {vat_percent:g} %'); c.drawRightString(R-2*mm,y-4.5*mm,_number(vat_amount,currency)); y-=6*mm
@@ -942,11 +970,20 @@ def pdf_v15(doc_id):
         y-=12*mm
 
     c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Arrêté à la somme de :'); c.setFont('Helvetica',9); c.drawString(L+44*mm,y,_amount_words(total,currency)+'.')
-    if (d['notes'] or '').strip():
-        y-=7*mm; c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Notes :'); y-=5*mm; c.setFont('Helvetica',9)
-        for note_line in (d['notes'] or '').splitlines():
+    if note_lines:
+        if y-12*mm<98*mm:
+            y=new_content_page()
+        else:
+            y-=7*mm
+        c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Notes :'); y-=5*mm; c.setFont('Helvetica',9)
+        for note_line in note_lines:
+            if y<98*mm:
+                y=new_content_page()
+                c.setFont('Helvetica-Bold',9); c.drawString(L+5*mm,y,'Notes (suite) :')
+                y-=5*mm; c.setFont('Helvetica',9)
             c.drawString(L+5*mm,y,note_line[:100]); y-=5*mm
 
+    # The final footer is kept below all content, never over the totals.
     by=50*mm
     c.setFillColorRGB(.7,.69,.69); c.rect(L,by,R-L,40*mm,fill=1,stroke=0)
     c.setFillColorRGB(.45,.43,.43); c.rect(L+2*mm,by+32*mm,R-L-4*mm,7*mm,fill=1,stroke=0)
